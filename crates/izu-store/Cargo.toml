@@ -1,0 +1,29 @@
+[package]
+name = "izu-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+izu-model.workspace = true
+izu-platform = { path = "../izu-platform", version = "0.1.0" }
+sha2.workspace = true
+thiserror.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = []
+# Development-only fault hooks. Enabling this in release builds is a compile error.
+fault-injection = []
+
+[[example]]
+name = "store_lab"
+required-features = ["fault-injection"]

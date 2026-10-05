@@ -1,0 +1,433 @@
+{
+  "schema_version": 1,
+  "name": "conflict_preservation_explicit_resolution",
+  "steps": [
+    {
+      "kind": "write",
+      "path": "repo/shared.txt",
+      "text": "shared baseline\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "repo"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "commit",
+        "-m",
+        "base",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "base": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "refs",
+        "set",
+        "review",
+        "${base}",
+        "--expect-absent"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "ours",
+        "--path",
+        "${root}/ours",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ours_ws": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "ours/shared.txt",
+      "text": "ours retained\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "--workspace",
+        "${ours_ws}",
+        "commit",
+        "-m",
+        "ours",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ours": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "theirs",
+        "--path",
+        "${root}/theirs",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "theirs_ws": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "theirs/shared.txt",
+      "text": "theirs retained\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "--workspace",
+        "${theirs_ws}",
+        "commit",
+        "-m",
+        "theirs",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "theirs": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${ours}",
+        "--target",
+        "review",
+        "--expect",
+        "${base}",
+        "--check",
+        "candidate-file",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "shared.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "candidate-file"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ours_landed": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${theirs}",
+        "--target",
+        "review",
+        "--expect",
+        "${ours_landed}",
+        "--check",
+        "candidate-file",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "shared.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "error",
+        "/outcome/error/code": "conflict"
+      },
+      "expected_exit": 4
+    },
+    {
+      "kind": "assert_file",
+      "path": "ours/shared.txt",
+      "text": "ours retained\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "theirs/shared.txt",
+      "text": "theirs retained\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/shared.txt",
+      "text": "shared baseline\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "refs",
+        "list"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok",
+        "/outcome/result/data/review": "${ours_landed}"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "resolver",
+        "--path",
+        "${root}/resolver",
+        "--from",
+        "${ours_landed}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "resolver": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "resolver/shared.txt",
+      "text": "ours and theirs explicitly resolved\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "--workspace",
+        "${resolver}",
+        "commit",
+        "-m",
+        "explicit resolution",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "resolved": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${resolved}",
+        "--target",
+        "review",
+        "--expect",
+        "${ours_landed}",
+        "--check",
+        "candidate-file",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "shared.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "candidate-file"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "landed": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "restore",
+        "${landed}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/shared.txt",
+      "text": "ours and theirs explicitly resolved\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "theirs/shared.txt",
+      "text": "theirs retained\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    }
+  ]
+}

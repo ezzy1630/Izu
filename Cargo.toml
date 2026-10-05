@@ -1,0 +1,49 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+authors = ["Ezzy Rappeport"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+sha2 = "0.10.9"
+sha1 = "0.10"
+rustix = { version = "1.1", features = ["fs", "process"] }
+getrandom = "0.3"
+ignore = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+tempfile = "3"
+izu-model = { path = "crates/izu-model", version = "0.1.0" }
+izu-platform = { path = "crates/izu-platform", version = "0.1.0" }
+izu-process = { path = "crates/izu-process", version = "0.1.0" }
+izu-store = { path = "crates/izu-store", version = "0.1.0" }
+izu-merge = { path = "crates/izu-merge", version = "0.1.0" }
+izu-engine = { path = "crates/izu-engine", version = "0.1.0" }
+izu-runtime = { path = "crates/izu-runtime", version = "0.1.0" }
+izu-environment = { path = "crates/izu-environment", version = "0.1.0" }
+izu-git = { path = "crates/izu-git", version = "0.1.0" }
+izu-bundle = { path = "crates/izu-bundle", version = "0.1.0" }
+izu-api = { path = "crates/izu-api", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+overflow-checks = true
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev]
+overflow-checks = true

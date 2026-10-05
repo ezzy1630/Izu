@@ -1,0 +1,3705 @@
+{
+  "schema_version": 1,
+  "name": "30_writers_common_target_integration",
+  "steps": [
+    {
+      "kind": "write",
+      "path": "repo/base.txt",
+      "text": "common baseline\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "repo"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "commit",
+        "-m",
+        "common baseline",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "base": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "refs",
+        "set",
+        "common",
+        "${base}",
+        "--expect-absent"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-0",
+        "--path",
+        "${root}/writer-0",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws0": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-0/unique-00.txt",
+      "text": "accepted change 0\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-1",
+        "--path",
+        "${root}/writer-1",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws1": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-1/unique-01.txt",
+      "text": "accepted change 1\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-2",
+        "--path",
+        "${root}/writer-2",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws2": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-2/unique-02.txt",
+      "text": "accepted change 2\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-3",
+        "--path",
+        "${root}/writer-3",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws3": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-3/unique-03.txt",
+      "text": "accepted change 3\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-4",
+        "--path",
+        "${root}/writer-4",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws4": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-4/unique-04.txt",
+      "text": "accepted change 4\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-5",
+        "--path",
+        "${root}/writer-5",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws5": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-5/unique-05.txt",
+      "text": "accepted change 5\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-6",
+        "--path",
+        "${root}/writer-6",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws6": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-6/unique-06.txt",
+      "text": "accepted change 6\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-7",
+        "--path",
+        "${root}/writer-7",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws7": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-7/unique-07.txt",
+      "text": "accepted change 7\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-8",
+        "--path",
+        "${root}/writer-8",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws8": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-8/unique-08.txt",
+      "text": "accepted change 8\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-9",
+        "--path",
+        "${root}/writer-9",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws9": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-9/unique-09.txt",
+      "text": "accepted change 9\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-10",
+        "--path",
+        "${root}/writer-10",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws10": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-10/unique-10.txt",
+      "text": "accepted change 10\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-11",
+        "--path",
+        "${root}/writer-11",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws11": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-11/unique-11.txt",
+      "text": "accepted change 11\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-12",
+        "--path",
+        "${root}/writer-12",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws12": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-12/unique-12.txt",
+      "text": "accepted change 12\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-13",
+        "--path",
+        "${root}/writer-13",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws13": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-13/unique-13.txt",
+      "text": "accepted change 13\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-14",
+        "--path",
+        "${root}/writer-14",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws14": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-14/unique-14.txt",
+      "text": "accepted change 14\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-15",
+        "--path",
+        "${root}/writer-15",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws15": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-15/unique-15.txt",
+      "text": "accepted change 15\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-16",
+        "--path",
+        "${root}/writer-16",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws16": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-16/unique-16.txt",
+      "text": "accepted change 16\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-17",
+        "--path",
+        "${root}/writer-17",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws17": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-17/unique-17.txt",
+      "text": "accepted change 17\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-18",
+        "--path",
+        "${root}/writer-18",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws18": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-18/unique-18.txt",
+      "text": "accepted change 18\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-19",
+        "--path",
+        "${root}/writer-19",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws19": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-19/unique-19.txt",
+      "text": "accepted change 19\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-20",
+        "--path",
+        "${root}/writer-20",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws20": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-20/unique-20.txt",
+      "text": "accepted change 20\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-21",
+        "--path",
+        "${root}/writer-21",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws21": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-21/unique-21.txt",
+      "text": "accepted change 21\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-22",
+        "--path",
+        "${root}/writer-22",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws22": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-22/unique-22.txt",
+      "text": "accepted change 22\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-23",
+        "--path",
+        "${root}/writer-23",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws23": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-23/unique-23.txt",
+      "text": "accepted change 23\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-24",
+        "--path",
+        "${root}/writer-24",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws24": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-24/unique-24.txt",
+      "text": "accepted change 24\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-25",
+        "--path",
+        "${root}/writer-25",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws25": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-25/unique-25.txt",
+      "text": "accepted change 25\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-26",
+        "--path",
+        "${root}/writer-26",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws26": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-26/unique-26.txt",
+      "text": "accepted change 26\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-27",
+        "--path",
+        "${root}/writer-27",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws27": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-27/unique-27.txt",
+      "text": "accepted change 27\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-28",
+        "--path",
+        "${root}/writer-28",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws28": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-28/unique-28.txt",
+      "text": "accepted change 28\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer-29",
+        "--path",
+        "${root}/writer-29",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws29": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer-29/unique-29.txt",
+      "text": "accepted change 29\n"
+    },
+    {
+      "kind": "parallel",
+      "commands": [
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws0}",
+            "commit",
+            "-m",
+            "accepted writer 0",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev0": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws1}",
+            "commit",
+            "-m",
+            "accepted writer 1",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev1": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws2}",
+            "commit",
+            "-m",
+            "accepted writer 2",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev2": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws3}",
+            "commit",
+            "-m",
+            "accepted writer 3",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev3": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws4}",
+            "commit",
+            "-m",
+            "accepted writer 4",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev4": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws5}",
+            "commit",
+            "-m",
+            "accepted writer 5",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev5": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws6}",
+            "commit",
+            "-m",
+            "accepted writer 6",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev6": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws7}",
+            "commit",
+            "-m",
+            "accepted writer 7",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev7": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws8}",
+            "commit",
+            "-m",
+            "accepted writer 8",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev8": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws9}",
+            "commit",
+            "-m",
+            "accepted writer 9",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev9": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws10}",
+            "commit",
+            "-m",
+            "accepted writer 10",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev10": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws11}",
+            "commit",
+            "-m",
+            "accepted writer 11",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev11": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws12}",
+            "commit",
+            "-m",
+            "accepted writer 12",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev12": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws13}",
+            "commit",
+            "-m",
+            "accepted writer 13",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev13": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws14}",
+            "commit",
+            "-m",
+            "accepted writer 14",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev14": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws15}",
+            "commit",
+            "-m",
+            "accepted writer 15",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev15": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws16}",
+            "commit",
+            "-m",
+            "accepted writer 16",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev16": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws17}",
+            "commit",
+            "-m",
+            "accepted writer 17",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev17": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws18}",
+            "commit",
+            "-m",
+            "accepted writer 18",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev18": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws19}",
+            "commit",
+            "-m",
+            "accepted writer 19",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev19": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws20}",
+            "commit",
+            "-m",
+            "accepted writer 20",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev20": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws21}",
+            "commit",
+            "-m",
+            "accepted writer 21",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev21": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws22}",
+            "commit",
+            "-m",
+            "accepted writer 22",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev22": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws23}",
+            "commit",
+            "-m",
+            "accepted writer 23",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev23": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws24}",
+            "commit",
+            "-m",
+            "accepted writer 24",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev24": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws25}",
+            "commit",
+            "-m",
+            "accepted writer 25",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev25": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws26}",
+            "commit",
+            "-m",
+            "accepted writer 26",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev26": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws27}",
+            "commit",
+            "-m",
+            "accepted writer 27",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev27": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws28}",
+            "commit",
+            "-m",
+            "accepted writer 28",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev28": "/outcome/result/data/revision"
+          }
+        },
+        {
+          "args": [
+            "--json",
+            "--repo",
+            "${root}/repo",
+            "--workspace",
+            "${ws29}",
+            "commit",
+            "-m",
+            "accepted writer 29",
+            "--author-name",
+            "izu lab fixture",
+            "--author-email",
+            "fixture@izu.invalid"
+          ],
+          "captures": {
+            "rev29": "/outcome/result/data/revision"
+          }
+        }
+      ],
+      "expected_successes": 30
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/base.txt",
+      "text": "common baseline\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev0}",
+        "--target",
+        "common",
+        "--expect",
+        "${base}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-00.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-0/unique-00.txt",
+      "text": "accepted change 0\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev1}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-01.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-1/unique-01.txt",
+      "text": "accepted change 1\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev2}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-02.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-2/unique-02.txt",
+      "text": "accepted change 2\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev3}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-03.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-3/unique-03.txt",
+      "text": "accepted change 3\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev4}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-04.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-4/unique-04.txt",
+      "text": "accepted change 4\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev5}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-05.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-5/unique-05.txt",
+      "text": "accepted change 5\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev6}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-06.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-6/unique-06.txt",
+      "text": "accepted change 6\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev7}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-07.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-7/unique-07.txt",
+      "text": "accepted change 7\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev8}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-08.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-8/unique-08.txt",
+      "text": "accepted change 8\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev9}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-09.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-9/unique-09.txt",
+      "text": "accepted change 9\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev10}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-10.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-10/unique-10.txt",
+      "text": "accepted change 10\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev11}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-11.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-11/unique-11.txt",
+      "text": "accepted change 11\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev12}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-12.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-12/unique-12.txt",
+      "text": "accepted change 12\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev13}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-13.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-13/unique-13.txt",
+      "text": "accepted change 13\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev14}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-14.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-14/unique-14.txt",
+      "text": "accepted change 14\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev15}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-15.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-15/unique-15.txt",
+      "text": "accepted change 15\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev16}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-16.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-16/unique-16.txt",
+      "text": "accepted change 16\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev17}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-17.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-17/unique-17.txt",
+      "text": "accepted change 17\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev18}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-18.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-18/unique-18.txt",
+      "text": "accepted change 18\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev19}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-19.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-19/unique-19.txt",
+      "text": "accepted change 19\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev20}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-20.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-20/unique-20.txt",
+      "text": "accepted change 20\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev21}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-21.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-21/unique-21.txt",
+      "text": "accepted change 21\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev22}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-22.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-22/unique-22.txt",
+      "text": "accepted change 22\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev23}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-23.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-23/unique-23.txt",
+      "text": "accepted change 23\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev24}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-24.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-24/unique-24.txt",
+      "text": "accepted change 24\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev25}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-25.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-25/unique-25.txt",
+      "text": "accepted change 25\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev26}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-26.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-26/unique-26.txt",
+      "text": "accepted change 26\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev27}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-27.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-27/unique-27.txt",
+      "text": "accepted change 27\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev28}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-28.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-28/unique-28.txt",
+      "text": "accepted change 28\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${rev29}",
+        "--target",
+        "common",
+        "--expect",
+        "${current}",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--check",
+        "source-present",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique-29.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "candidate": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${candidate}",
+        "--check",
+        "source-present"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${candidate}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "current": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer-29/unique-29.txt",
+      "text": "accepted change 29\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/base.txt",
+      "text": "common baseline\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "restore",
+        "${current}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/base.txt",
+      "text": "common baseline\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-00.txt",
+      "text": "accepted change 0\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-01.txt",
+      "text": "accepted change 1\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-02.txt",
+      "text": "accepted change 2\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-03.txt",
+      "text": "accepted change 3\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-04.txt",
+      "text": "accepted change 4\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-05.txt",
+      "text": "accepted change 5\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-06.txt",
+      "text": "accepted change 6\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-07.txt",
+      "text": "accepted change 7\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-08.txt",
+      "text": "accepted change 8\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-09.txt",
+      "text": "accepted change 9\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-10.txt",
+      "text": "accepted change 10\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-11.txt",
+      "text": "accepted change 11\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-12.txt",
+      "text": "accepted change 12\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-13.txt",
+      "text": "accepted change 13\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-14.txt",
+      "text": "accepted change 14\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-15.txt",
+      "text": "accepted change 15\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-16.txt",
+      "text": "accepted change 16\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-17.txt",
+      "text": "accepted change 17\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-18.txt",
+      "text": "accepted change 18\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-19.txt",
+      "text": "accepted change 19\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-20.txt",
+      "text": "accepted change 20\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-21.txt",
+      "text": "accepted change 21\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-22.txt",
+      "text": "accepted change 22\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-23.txt",
+      "text": "accepted change 23\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-24.txt",
+      "text": "accepted change 24\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-25.txt",
+      "text": "accepted change 25\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-26.txt",
+      "text": "accepted change 26\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-27.txt",
+      "text": "accepted change 27\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-28.txt",
+      "text": "accepted change 28\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique-29.txt",
+      "text": "accepted change 29\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    }
+  ]
+}

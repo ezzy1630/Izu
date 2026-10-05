@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "name": "same_ref_compare_and_swap_race",
+  "steps": [
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "."
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "write",
+      "path": "source.txt",
+      "text": "base\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "commit",
+        "-m",
+        "base",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "captures": {
+        "base": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "refs",
+        "set",
+        "race",
+        "${base}",
+        "--expect-absent"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "write",
+      "path": "source.txt",
+      "text": "second\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "commit",
+        "-m",
+        "second",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "captures": {
+        "second": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "source.txt",
+      "text": "third\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "commit",
+        "-m",
+        "third",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "captures": {
+        "third": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "parallel",
+      "commands": [
+        {
+          "args": [
+            "--json",
+            "refs",
+            "set",
+            "race",
+            "${second}",
+            "--expect",
+            "${base}"
+          ]
+        },
+        {
+          "args": [
+            "--json",
+            "refs",
+            "set",
+            "race",
+            "${third}",
+            "--expect",
+            "${base}"
+          ]
+        }
+      ],
+      "expected_successes": 1,
+      "expected_failure_code": "stale_expectation"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "refs",
+        "list"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "one_of_assertions": {
+        "/outcome/result/data/race": [
+          "${second}",
+          "${third}"
+        ]
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "show",
+        "${second}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "show",
+        "${third}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "assert_file",
+      "path": "source.txt",
+      "text": "third\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    }
+  ]
+}

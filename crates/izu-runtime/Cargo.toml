@@ -1,0 +1,33 @@
+[package]
+name = "izu-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+fault-injection = ["izu-engine/fault-injection", "izu-store/fault-injection"]
+
+[dependencies]
+izu-model.workspace = true
+izu-engine.workspace = true
+izu-platform = { path = "../izu-platform", version = "0.1.0" }
+izu-process = { path = "../izu-process", version = "0.1.0" }
+izu-environment = { path = "../izu-environment", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+getrandom.workspace = true
+rustix = { version = "1.1.5", features = ["fs", "process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+izu-store.workspace = true
+
+[[bin]]
+name = "izu-runtime-worker"
+path = "src/bin/worker.rs"

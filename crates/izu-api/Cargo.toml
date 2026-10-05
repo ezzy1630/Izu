@@ -1,0 +1,29 @@
+[package]
+name = "izu-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+izu-engine.workspace = true
+izu-model.workspace = true
+izu-platform.workspace = true
+izu-store.workspace = true
+izu-merge.workspace = true
+izu-runtime.workspace = true
+izu-git.workspace = true
+izu-bundle = { path = "../izu-bundle", version = "0.1.0" }
+izu-process = { path = "../izu-process", version = "0.1.0" }
+izu-environment = { path = "../izu-environment", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+schemars = "=1.2.2"
+
+[dev-dependencies]
+tempfile.workspace = true

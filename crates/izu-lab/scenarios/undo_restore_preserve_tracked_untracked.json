@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "name": "undo_restore_preserve_tracked_untracked",
+  "steps": [
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "."
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "write",
+      "path": "tracked.txt",
+      "text": "base tracked\n"
+    },
+    {
+      "kind": "write",
+      "path": "loose.txt",
+      "text": "untracked preserved\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "commit",
+        "-m",
+        "baseline",
+        "--path",
+        "tracked.txt",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "captures": {
+        "base": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "tracked.txt",
+      "text": "edited tracked\n"
+    },
+    {
+      "kind": "write",
+      "path": "loose.txt",
+      "text": "edited unrelated\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "checkpoint"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "restore",
+        "${base}",
+        "--path",
+        "tracked.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "captures": {
+        "restore_op": "/outcome/result/data/operation"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "tracked.txt",
+      "text": "base tracked\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "loose.txt",
+      "text": "edited unrelated\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "undo",
+        "${restore_op}",
+        "--path",
+        "tracked.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "assert_file",
+      "path": "tracked.txt",
+      "text": "edited tracked\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "loose.txt",
+      "text": "edited unrelated\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    }
+  ]
+}

@@ -1,0 +1,333 @@
+{
+  "schema_version": 1,
+  "name": "exact_candidate_check_stale_evidence",
+  "steps": [
+    {
+      "kind": "write",
+      "path": "repo/base.txt",
+      "text": "baseline\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "repo"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "commit",
+        "-m",
+        "base",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "base": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "refs",
+        "set",
+        "review",
+        "${base}",
+        "--expect-absent"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "writer",
+        "--path",
+        "${root}/writer",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "ws": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer/unique.txt",
+      "text": "candidate one\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "--workspace",
+        "${ws}",
+        "commit",
+        "-m",
+        "one",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "one": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${one}",
+        "--target",
+        "review",
+        "--expect",
+        "${base}",
+        "--check",
+        "candidate-file",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "c1": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${c1}"
+      ],
+      "assertions": {
+        "/outcome/kind": "error",
+        "/outcome/error/code": "missing_check"
+      },
+      "expected_exit": 5
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${c1}",
+        "--check",
+        "candidate-file"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer/unique.txt",
+      "text": "candidate two\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "--workspace",
+        "${ws}",
+        "commit",
+        "-m",
+        "two",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "two": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "candidate",
+        "${two}",
+        "--target",
+        "review",
+        "--expect",
+        "${base}",
+        "--check",
+        "candidate-file",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid",
+        "--",
+        "/bin/sh",
+        "-c",
+        "test \"$@\"",
+        "izu-lab-test",
+        "-f",
+        "unique.txt"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "c2": "/outcome/result/data/Ready/candidate"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${c2}"
+      ],
+      "assertions": {
+        "/outcome/kind": "error",
+        "/outcome/error/code": "missing_check"
+      },
+      "expected_exit": 5
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "check",
+        "${c2}",
+        "--check",
+        "candidate-file"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${c1}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "landed": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "land",
+        "${c2}"
+      ],
+      "assertions": {
+        "/outcome/kind": "error",
+        "/outcome/error/code": "stale_expectation"
+      },
+      "expected_exit": 4
+    },
+    {
+      "kind": "assert_absent",
+      "path": "repo/unique.txt"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "restore",
+        "${landed}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/unique.txt",
+      "text": "candidate one\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer/unique.txt",
+      "text": "candidate two\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    }
+  ]
+}

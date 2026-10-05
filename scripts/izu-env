@@ -1,0 +1,25 @@
+#!/bin/sh
+# Run from the desired checkout; tools and disposable data travel with this project.
+set -eu
+IZU_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+IZU_LOCAL="$IZU_ROOT/.artifacts/local"
+if [ ! -x "$IZU_LOCAL/tools/cargo/bin/cargo" ]; then
+    printf '%s\n' "Missing isolated toolchain: $IZU_LOCAL/tools/cargo/bin/cargo" >&2
+    exit 1
+fi
+if [ "$#" -eq 0 ]; then
+    printf '%s\n' 'usage: scripts/izu-env COMMAND [ARGUMENTS...]' >&2
+    exit 2
+fi
+mkdir -p "$IZU_LOCAL/tmp-root"
+# Old explicit compiler paths bypass rustup and can retain relocated build inputs.
+unset RUSTC RUSTDOC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
+export CARGO_HOME="$IZU_LOCAL/tools/cargo"
+export RUSTUP_HOME="$IZU_LOCAL/tools/rustup"
+export CARGO_BUILD_JOBS=2
+export CARGO_TARGET_DIR="$(pwd -P)/target-izu-internal"
+export CARGO_TERM_COLOR=never
+export TMPDIR="$IZU_LOCAL/tmp-root"
+export PYTHONDONTWRITEBYTECODE=1
+export PATH="$CARGO_HOME/bin:$PATH"
+exec "$@"

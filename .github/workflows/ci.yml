@@ -1,0 +1,57 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 2
+      RUST_BACKTRACE: 1
+      TMPDIR: ${{ runner.temp }}/izu-tmp
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+      - name: Create isolated test storage
+        run: mkdir -p "$TMPDIR" .artifacts/ci
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check all targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test the workspace
+        run: cargo test --workspace --locked
+      - name: Test injected persistence failures
+        run: cargo test -p izu-store -p izu-engine -p izu-bundle -p izu-runtime --features izu-store/fault-injection,izu-engine/fault-injection,izu-bundle/fault-injection,izu-runtime/fault-injection --locked
+      - name: Check fault-injection targets
+        run: cargo clippy -p izu-store -p izu-engine -p izu-bundle -p izu-runtime --all-targets --features izu-store/fault-injection,izu-engine/fault-injection,izu-bundle/fault-injection,izu-runtime/fault-injection --locked -- -D warnings
+      - name: Build release executables
+        run: cargo build -p izu-cli -p izu-lab --release --locked
+      - name: Exercise the exact release executable
+        shell: bash
+        run: |
+          executable="$GITHUB_WORKSPACE/target/release/izu"
+          digest="$(shasum -a 256 "$executable" | cut -d ' ' -f 1)"
+          target/release/izu-lab \
+            --executable "$executable" --expected-sha256 "$digest" \
+            --source-root "$GITHUB_WORKSPACE" \
+            --output "$GITHUB_WORKSPACE/.artifacts/ci/cli-workflows.json" \
+            --scratch-dir "$TMPDIR" acceptance --scope cli-workflows

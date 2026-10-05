@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "name": "private_workspace_root_unchanged",
+  "steps": [
+    {
+      "kind": "write",
+      "path": "repo/source.txt",
+      "text": "root baseline\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "repo"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "commit",
+        "-m",
+        "baseline",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "captures": {
+        "base": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "change",
+        "start",
+        "--name",
+        "private-writer",
+        "--path",
+        "${root}/writer",
+        "--from",
+        "${base}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": "",
+      "captures": {
+        "writer": "/outcome/result/data/id"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "writer/source.txt",
+      "text": "private writer edit\n"
+    },
+    {
+      "kind": "write",
+      "path": "writer/unique.txt",
+      "text": "retained private work\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "--workspace",
+        "${writer}",
+        "commit",
+        "-m",
+        "private change",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/source.txt",
+      "text": "root baseline\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer/source.txt",
+      "text": "private writer edit\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer/unique.txt",
+      "text": "retained private work\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "workspace",
+        "close",
+        "${writer}"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    },
+    {
+      "kind": "assert_file",
+      "path": "writer/unique.txt",
+      "text": "retained private work\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "cwd": ""
+    }
+  ]
+}

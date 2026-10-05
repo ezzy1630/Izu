@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "name": "ignore_tracked_symlink_safety",
+  "steps": [
+    {
+      "kind": "write",
+      "path": "repo/retained.tmp",
+      "text": "tracked baseline\n"
+    },
+    {
+      "kind": "write",
+      "path": "sentinel.txt",
+      "text": "external target must survive\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "repo"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "commit",
+        "-m",
+        "track before ignore",
+        "--author-name",
+        "izu lab fixture",
+        "--author-email",
+        "fixture@izu.invalid"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "base": "/outcome/result/data/revision"
+      }
+    },
+    {
+      "kind": "write",
+      "path": "repo/.gitignore",
+      "text": "*.tmp\nignored/\n"
+    },
+    {
+      "kind": "write",
+      "path": "repo/retained.tmp",
+      "text": "tracked despite ignore\n"
+    },
+    {
+      "kind": "write",
+      "path": "repo/scratch.tmp",
+      "text": "ignored untracked bytes\n"
+    },
+    {
+      "kind": "write",
+      "path": "repo/ignored/deep.txt",
+      "text": "ignored subtree bytes\n"
+    },
+    {
+      "kind": "symlink",
+      "path": "repo/external-link",
+      "target": "sentinel.txt"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "status"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok",
+        "/outcome/result/data/entries/*/path": [
+          ".gitignore",
+          "external-link",
+          "retained.tmp"
+        ]
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "checkpoint"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "restore",
+        "${base}",
+        "--path",
+        "retained.tmp"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/retained.tmp",
+      "text": "tracked baseline\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/scratch.tmp",
+      "text": "ignored untracked bytes\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/ignored/deep.txt",
+      "text": "ignored subtree bytes\n"
+    },
+    {
+      "kind": "assert_file",
+      "path": "sentinel.txt",
+      "text": "external target must survive\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    }
+  ]
+}

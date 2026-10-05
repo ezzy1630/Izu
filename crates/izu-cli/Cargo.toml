@@ -1,0 +1,25 @@
+[package]
+name = "izu-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+izu-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { workspace = true, features = ["env"] }
+signal-hook = "=0.4.4"
+rustix = { workspace = true, features = ["event", "fs"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "izu"
+path = "src/main.rs"

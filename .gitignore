@@ -1,0 +1,12 @@
+/target/
+**/target-*/
+**/target/
+**/lab-results/
+/.artifacts/
+/.izu/
+.env
+.env.*
+!.env.example
+!.env.sample
+*.profraw
+.DS_Store

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "name": "json_external_path",
+  "steps": [
+    {
+      "kind": "write",
+      "path": "repo/source.txt",
+      "text": "JSON caller preserves bytes\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "init",
+        "repo"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    },
+    {
+      "kind": "run",
+      "args": [
+        "json"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "captures": {
+        "workspace": "/outcome/result/data/id",
+        "head": "/outcome/result/data/expected/head",
+        "tree": "/outcome/result/data/expected/working_tree"
+      },
+      "stdin": "{\"schema_version\": 1, \"operation\": {\"kind\": \"inspect\", \"context\": {\"repository\": \"${root}/repo\", \"workspace\": null}}}"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "json"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      },
+      "stdin": "{\"schema_version\": 1, \"operation\": {\"kind\": \"checkpoint\", \"context\": {\"repository\": \"${root}/repo\", \"workspace\": \"${workspace}\", \"expected\": {\"head\": \"${head}\", \"working_tree\": \"${tree}\"}}, \"selection\": {\"kind\": \"all\"}}}"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "json"
+      ],
+      "assertions": {
+        "/outcome/kind": "error",
+        "/outcome/error/code": "stale_expectation"
+      },
+      "expected_exit": 4,
+      "stdin": "{\"schema_version\": 1, \"operation\": {\"kind\": \"checkpoint\", \"context\": {\"repository\": \"${root}/repo\", \"workspace\": \"${workspace}\", \"expected\": {\"head\": \"${head}\", \"working_tree\": \"${tree}\"}}, \"selection\": {\"kind\": \"all\"}}}"
+    },
+    {
+      "kind": "assert_file",
+      "path": "repo/source.txt",
+      "text": "JSON caller preserves bytes\n"
+    },
+    {
+      "kind": "run",
+      "args": [
+        "--json",
+        "--repo",
+        "${root}/repo",
+        "verify"
+      ],
+      "assertions": {
+        "/outcome/kind": "ok"
+      }
+    }
+  ]
+}
