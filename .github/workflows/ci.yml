@@ -24,7 +24,6 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_BUILD_JOBS: 2
       RUST_BACKTRACE: 1
-      TMPDIR: ${{ runner.temp }}/izu-tmp
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -32,7 +31,10 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
       - name: Create isolated test storage
-        run: mkdir -p "$TMPDIR" .artifacts/ci
+        run: |
+          izu_tmp="$RUNNER_TEMP/izu-tmp"
+          mkdir -p "$izu_tmp" .artifacts/ci
+          printf 'TMPDIR=%s\n' "$izu_tmp" >> "$GITHUB_ENV"
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check all targets

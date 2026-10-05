@@ -28,8 +28,8 @@ results. Raw logs, failed fixtures and exact source/binary manifests remain in
 the maintainer's private `.artifacts` directory and are excluded from Git.
 The tested source manifest is
 `9399290a774b8e861cac0103e26eb88848eaeb79fc0db77154cdbb4ae1004544`.
-Subsequent publication changes update licensing, attribution, metadata and
-documentation; they do not change Rust implementation or test code. Fresh CI
+Subsequent publication changes update licensing, attribution, metadata,
+documentation and CI setup; they do not change Rust implementation or test code. Fresh CI
 results apply to their own recorded commit and environment.
 
 ## Open release work
