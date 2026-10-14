@@ -205,6 +205,15 @@ def rust_host(verbose):
     return hosts[0]
 
 
+def rust_toolchain_tools(output):
+    rustup = tool(shutil.which('rustup') or '')
+    # Homebrew's rustup symlink resolves to rustup-init, whose argv[0] selects
+    # installer mode. Hash the resolved file but invoke the selected tool name.
+    rustc = tool(probe([rustup['selected_path'], 'which', 'rustc'], output)['stdout'].strip())
+    cargo = tool(probe([rustup['selected_path'], 'which', 'cargo'], output)['stdout'].strip())
+    return rustc, cargo
+
+
 def prepare(args):
     root = args.source_root.resolve(strict=True)
     refuse_overrides(os.environ)
@@ -212,9 +221,7 @@ def prepare(args):
     refuse_configs(root, cargo_home)
     output = contained_new_output(args.output, root)
     source = source_manifest(root)
-    rustup = tool(shutil.which('rustup') or '')
-    rustc = tool(probe([rustup['resolved_path'], 'which', 'rustc'], output)['stdout'].strip())
-    cargo = tool(probe([rustup['resolved_path'], 'which', 'cargo'], output)['stdout'].strip())
+    rustc, cargo = rust_toolchain_tools(output)
     compiler = probe([rustc['resolved_path'], '-vV'], output)
     cargo_version = probe([cargo['resolved_path'], '-V'], output)
     host = rust_host(compiler['stdout'])

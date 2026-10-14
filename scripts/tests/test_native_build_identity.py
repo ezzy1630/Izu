@@ -19,6 +19,33 @@ spec.loader.exec_module(identity)
 
 
 class IdentityTests(unittest.TestCase):
+    def test_multicall_rustup_keeps_its_selected_invocation_name(self):
+        local = Path(__file__).resolve().parents[2] / '.artifacts/local'
+        local.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=local) as scratch:
+            root = Path(scratch)
+            installer = root / 'rustup-init'
+            installer.write_text('#!' + sys.executable + '\n' + '''import sys
+from pathlib import Path
+if Path(sys.argv[0]).name != 'rustup':
+    sys.exit('setup mode: unexpected argument which')
+if sys.argv[1:] not in [['which', 'rustc'], ['which', 'cargo']]:
+    sys.exit('unexpected tool selection')
+print(Path(sys.argv[0]).parent / sys.argv[2])
+''')
+            installer.chmod(0o700)
+            (root / 'rustup').symlink_to(installer.name)
+            for name in ('rustc', 'cargo'):
+                path = root / name
+                path.write_text('selected tool fixture\n')
+                path.chmod(0o700)
+            with mock.patch.dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH']):
+                rustc, cargo = identity.rust_toolchain_tools(root)
+            self.assertEqual(rustc['selected_path'], str(root / 'rustc'))
+            self.assertEqual(cargo['selected_path'], str(root / 'cargo'))
+            self.assertEqual(sorted(path.name for path in root.iterdir()),
+                             ['cargo', 'rustc', 'rustup', 'rustup-init'])
+
     def test_unqualified_flags_tools_and_target_overrides_refused_without_values(self):
         for name in ['RUSTFLAGS', 'CC', 'CC_aarch64_apple_darwin', 'SDKROOT',
                      'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER', 'RUSTC_WRAPPER',
