@@ -111,6 +111,14 @@ the request before the native wait. The 200 ms request budget and existing nativ
 wait assertion remain unchanged. The original CI log does not identify which
 channel timed out, so that particular scheduling cause remains unconfirmed.
 
+Another Intel provenance-test failure lacked the descendant marker after a
+negative probe. The fixture used nested Python startup under an artificial
+one-second limit and accepted any probe error. It now uses native fixture
+commands and checks the specific error for each case. Only the deliberate timeout
+case uses the one-second override; production probe bounds and the test's
+four-second return assertion are unchanged. The original probe error was not
+retained, so its exact failure cause remains unknown.
+
 Final Intel jobs did not execute because GitHub rejected the private campaign's
 jobs for account billing/spending limits. Earlier native CI passes belong to
 earlier sources and packages. No alternative final Intel environment was

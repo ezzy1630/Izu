@@ -115,33 +115,42 @@ print(Path(sys.argv[0]).parent / sys.argv[2])
     def test_real_probe_descendants_stop_on_success_timeout_nonzero_and_read_failure(self):
         local = Path(__file__).resolve().parents[2] / '.artifacts/local'
         local.mkdir(parents=True, exist_ok=True)
-        fixture = ("import os,sys,subprocess,time,json\n"
-                   "from pathlib import Path\n"
-                   "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
-                   "Path(sys.argv[1]).write_text(json.dumps([os.getpid(),p.pid]))\n"
-                   "mode=sys.argv[2]\n"
-                   "if mode=='timeout':time.sleep(30)\n"
-                   "if mode=='output':os.write(1,b'x'*300000);time.sleep(30)\n"
-                   "if mode=='nonzero':raise SystemExit(3)\n")
+        # These model native tool exits and inherited pipes. A second Python
+        # startup is unrelated to the probe's ownership and error contracts.
+        fixture = r'''/bin/sleep 30 &
+descendant=$!
+printf '[%s,%s]' "$$" "$descendant" > "$1"
+case "$2" in
+    timeout) exec /bin/sleep 30 ;;
+    output) /usr/bin/head -c 300000 /dev/zero; exec /bin/sleep 30 ;;
+    nonzero) exit 3 ;;
+esac
+'''
         with tempfile.TemporaryDirectory(dir=local) as scratch:
             root = Path(scratch)
             for mode in ['success', 'timeout', 'nonzero', 'output', 'read_failure']:
                 marker = root / (mode + '.json')
-                command = [sys.executable, '-c', fixture, str(marker), mode]
+                command = ['/bin/sh', '-c', fixture, 'owned-native-fixture', str(marker), mode]
                 original_read = Path.read_text
                 def read(path, *args, **kwargs):
                     if mode == 'read_failure' and path.name == 'status.json':
                         raise OSError('intentional post-spawn read failure')
                     return original_read(path, *args, **kwargs)
                 original_deadline = identity.PROBE_SECONDS
-                identity.PROBE_SECONDS = 1
+                identity.PROBE_SECONDS = 1 if mode == 'timeout' else original_deadline
                 started = time.monotonic()
                 try:
                     with self.subTest(mode=mode), mock.patch.object(Path, 'read_text', read):
                         if mode == 'success':
                             identity.probe(command, root)
                         else:
-                            with self.assertRaises((ValueError, OSError)):
+                            expected = {
+                                'timeout': 'native probe timed out',
+                                'nonzero': 'native probe failed',
+                                'output': 'output limit',
+                                'read_failure': 'intentional post-spawn read failure',
+                            }[mode]
+                            with self.assertRaisesRegex(ValueError, expected):
                                 identity.probe(command, root)
                 finally:
                     identity.PROBE_SECONDS = original_deadline
