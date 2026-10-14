@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """Failure-only capture; the Rust owner retains and bounds this whole process group."""
+import faulthandler
+import sys
+import time
+
+BOOT_STARTED = time.monotonic()
+if __name__ == '__main__':
+    print(f'diagnostic bootstrap unix_ns={time.time_ns()}', file=sys.stderr, flush=True)
+    faulthandler.dump_traceback_later(4, file=sys.stderr)
+
 import argparse
 import concurrent.futures
-import faulthandler
 import json
 import os
 from pathlib import Path
 import platform
 import selectors
 import subprocess
-import sys
 import threading
-import time
 
 CAPTURE_BYTES = 1024 * 1024
 
@@ -31,7 +37,8 @@ def main():
     # termination never erases the only diagnostic. Only this helper writes it
     # until the owner has stopped and reaped the entire process group.
     record = json.loads((output / 'capture.json').read_text())
-    record.update(status='running', helper_pid=os.getpid(), platform=platform.system(), commands=[])
+    record.update(status='running', helper_pid=os.getpid(), platform=platform.system(), commands=[],
+                  bootstrap_unix_ns=time.time_ns(), imports_seconds=time.monotonic() - BOOT_STARTED)
     started = time.monotonic()
     lock = threading.Lock()
 
@@ -188,7 +195,6 @@ if __name__ == '__main__':
     # Native probes have shorter bounds than this watchdog. If their helper
     # stalls too, retain its Python thread positions before the Rust owner
     # stops the whole group at the unchanged outer deadline.
-    faulthandler.dump_traceback_later(4, file=sys.stderr)
     try:
         main()
     finally:

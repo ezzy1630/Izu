@@ -1779,7 +1779,9 @@ impl McpClient {
                 self.started.elapsed().as_nanos()
             ));
         let mut report = json!({"parent":std::process::id(),"child":self.child.id(),
-            "before_cleanup":true,"status":"helper_not_started","commands":[]});
+            "before_cleanup":true,"status":"helper_not_started","commands":[],
+            "owner_started_unix_ns":std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).expect("clock after epoch").as_nanos().to_string()});
         fs::create_dir_all(&directory).expect("owned diagnostic directory");
         let save = |value: &Value| {
             let temporary = directory.join("capture-owner.tmp");
