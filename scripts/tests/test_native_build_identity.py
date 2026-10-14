@@ -137,7 +137,7 @@ esac
                         raise OSError('intentional post-spawn read failure')
                     return original_read(path, *args, **kwargs)
                 original_deadline = identity.PROBE_SECONDS
-                identity.PROBE_SECONDS = 1 if mode == 'timeout' else original_deadline
+                identity.PROBE_SECONDS = 1
                 started = time.monotonic()
                 try:
                     with self.subTest(mode=mode), mock.patch.object(Path, 'read_text', read):
