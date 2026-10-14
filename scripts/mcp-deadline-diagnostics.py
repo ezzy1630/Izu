@@ -2,6 +2,7 @@
 """Failure-only capture; the Rust owner retains and bounds this whole process group."""
 import argparse
 import concurrent.futures
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -171,4 +172,11 @@ print(json.dumps(result))'''
 
 
 if __name__ == '__main__':
-    main()
+    # Native probes have shorter bounds than this watchdog. If their helper
+    # stalls too, retain its Python thread positions before the Rust owner
+    # stops the whole group at the unchanged outer deadline.
+    faulthandler.dump_traceback_later(4, file=sys.stderr)
+    try:
+        main()
+    finally:
+        faulthandler.cancel_dump_traceback_later()
