@@ -2226,7 +2226,7 @@ fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendan
     let mut client = McpClient::from_child(child);
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/mcp-deadline-diagnostics.py");
-    for probe in ["slow-command", "failed-command"] {
+    for probe in ["slow-command", "failed-command", "backpressure-command"] {
         let failure = client.capture_deadline_command(&script, Some(probe));
         let directory = Path::new(failure["directory"].as_str().expect("capture directory"));
         let report: Value = serde_json::from_slice(
@@ -2247,7 +2247,7 @@ fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendan
             .iter()
             .find(|row| row["kind"] == "parent_stack")
             .expect("controlled native command");
-        if probe == "slow-command" {
+        if probe != "failed-command" {
             assert_eq!(row["state"], "timed_out", "{row}");
             let pid = fs::read_to_string(directory.join("native-descendant.pid"))
                 .expect("actual native descendant launched");
@@ -2259,11 +2259,29 @@ fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendan
                 status.stdout.is_empty(),
                 "native descendant survived: {status:?}"
             );
-            assert!(
-                fs::read_to_string(directory.join("parent_stack.stdout"))
-                    .expect("retained command stdout")
-                    .contains("controlled slow native command")
-            );
+            if probe == "backpressure-command" {
+                for stream in ["stdout", "stderr"] {
+                    assert_eq!(
+                        fs::metadata(directory.join(format!("parent_stack.{stream}")))
+                            .expect("bounded native output")
+                            .len(),
+                        1024 * 1024
+                    );
+                    assert!(
+                        row[format!("{stream}_dropped_bytes")]
+                            .as_u64()
+                            .expect("native output overflow count")
+                            >= 1024 * 1024,
+                        "{row}"
+                    );
+                }
+            } else {
+                assert!(
+                    fs::read_to_string(directory.join("parent_stack.stdout"))
+                        .expect("retained command stdout")
+                        .contains("controlled slow native command")
+                );
+            }
         } else {
             assert_eq!(row["state"], "completed");
             assert_eq!(row["exit_code"], 17);

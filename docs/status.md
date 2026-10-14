@@ -93,6 +93,15 @@ unexplained; visible checkpoints are not durable close acknowledgements.
 Diagnostic capture must retain live process, pipe and lock ownership on a
 future reproduction rather than declaring the incident resolved by a rerun.
 
+Public macOS Intel CI also exposed a failure in the diagnostic collector itself:
+native stack commands remained unfinished when its seven-second owner bound
+expired. Raw reports and both failed jobs are retained. A four-second Python
+thread watchdog now captures collector positions before shutdown, and a
+backpressure regression checks bounded stdout/stderr retention, overflow counts
+and descendant cleanup. Later passing Intel default runs do not identify the
+earlier blocking call. This collector incident remains open pending a failed
+watchdog trace; it is separate from the original MCP discovery timeout.
+
 Final Intel jobs did not execute because GitHub rejected the private campaign's
 jobs for account billing/spending limits. Earlier native CI passes belong to
 earlier sources and packages. No alternative final Intel environment was

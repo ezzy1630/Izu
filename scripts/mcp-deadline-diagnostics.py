@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--parent', type=int, required=True)
     parser.add_argument('--child', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--test-probe', choices=['slow-command', 'failed-command'],
+    parser.add_argument('--test-probe', choices=['slow-command', 'failed-command', 'backpressure-command'],
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -159,6 +159,19 @@ print(json.dumps(result))'''
         if args.test_probe == 'slow-command':
             script = "import os,subprocess,sys,time; print('controlled slow native command',flush=True); child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(30)']); open(sys.argv[1],'w').write(str(child.pid)); time.sleep(30)"
             update(target, argv=[sys.executable, '-B', '-c', script, str(output / 'native-descendant.pid')], bound_seconds=0.5)
+        elif args.test_probe == 'backpressure-command':
+            script = """import os,subprocess,sys,time
+child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(30)'])
+with open(sys.argv[1],'w') as stream: stream.write(str(child.pid))
+for descriptor in [1,2]:
+    remaining=2*1024*1024
+    while remaining:
+        written=os.write(descriptor,b'x'*min(remaining,65536))
+        if written==0: sys.exit('pipe write made no progress')
+        remaining-=written
+time.sleep(30)
+"""
+            update(target, argv=[sys.executable, '-B', '-c', script, str(output / 'native-descendant.pid')])
         else:
             update(target, argv=[sys.executable, '-B', '-c', "import sys; sys.stderr.write('controlled native command failure\\n'); sys.exit(17)"])
     # All workers are joined before the helper exits. The Rust owner kills the
