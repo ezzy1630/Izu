@@ -7,18 +7,30 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, io, path::Path};
 
 fn responses(bytes: &[u8]) -> io::Result<BTreeMap<u64, Value>> {
+    if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+        return Err(io::Error::other("unterminated MCP response frame"));
+    }
     let mut output = BTreeMap::new();
     for line in bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
     {
         let value: Value = serde_json::from_slice(line).map_err(io::Error::other)?;
-        if let Some(id) = value.get("id").and_then(Value::as_u64) {
-            if output.insert(id, value).is_some() {
-                return Err(io::Error::other("duplicate MCP response ID"));
-            }
-        } else if value.get("method").and_then(Value::as_str).is_none() {
+        if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+            || value.get("method").is_some()
+            || value.get("result").is_some() == value.get("error").is_some()
+        {
             return Err(io::Error::other("unexpected MCP stdout message"));
+        }
+        let id = value
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| io::Error::other("unexpected MCP response ID"))?;
+        if !(1..=6).contains(&id) {
+            return Err(io::Error::other("unexpected MCP response ID"));
+        }
+        if output.insert(id, value).is_some() {
+            return Err(io::Error::other("duplicate MCP response ID"));
         }
     }
     Ok(output)
@@ -55,6 +67,7 @@ pub fn acceptance(runner: &Runner, root: &Path) -> io::Result<Case> {
         let request = json!({"schema_version":1,"operation":{"kind":"status","context":{"repository":root.join("repo"),"workspace":workspace}}});
         let modern = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
         let messages = [
+            json!({"jsonrpc":"2.0","id":6,"method":"server/discover","params":{"_meta":modern}}),
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"izu-lab","version":"1"}}}),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
@@ -77,7 +90,7 @@ pub fn acceptance(runner: &Runner, root: &Path) -> io::Result<Case> {
                 }
                 responses(stdout)
                     .ok()
-                    .is_some_and(|responses| (1..=5).all(|id| responses.contains_key(&id)))
+                    .is_some_and(|responses| (1..=6).all(|id| responses.contains_key(&id)))
             },
         )?;
         let success = run.succeeded();
@@ -89,6 +102,18 @@ pub fn acceptance(runner: &Runner, root: &Path) -> io::Result<Case> {
             ));
         }
         let parsed = parsed?;
+        if parsed
+            .get(&6)
+            .and_then(|value| value.pointer("/result/supportedVersions"))
+            .and_then(Value::as_array)
+            .is_none_or(|versions| !versions.iter().any(|version| version == "2026-07-28"))
+            || parsed
+                .get(&6)
+                .and_then(|value| value.pointer("/result/capabilities/tools"))
+                .is_none()
+        {
+            return Err(io::Error::other("modern MCP discovery mismatch"));
+        }
         if parsed
             .get(&1)
             .and_then(|value| value.pointer("/result/protocolVersion"))
@@ -166,4 +191,27 @@ pub fn acceptance(runner: &Runner, root: &Path) -> io::Result<Case> {
         };
     }
     Ok(case)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_wire_requires_complete_frames_and_exact_rpc_envelopes() {
+        let valid = b"{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}\n";
+        assert_eq!(responses(valid).expect("complete response").len(), 1);
+        for invalid in [
+            &valid[..valid.len() - 1],
+            b"{\"id\":1,\"result\":{}}\n",
+            b"{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n",
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"error\":{}}\n",
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"unexpected\"}\n",
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"unexpected\"}\n",
+        ] {
+            assert!(responses(invalid).is_err(), "accepted {invalid:?}");
+        }
+        let duplicate = [valid.as_slice(), valid.as_slice()].concat();
+        assert!(responses(&duplicate).is_err());
+    }
 }

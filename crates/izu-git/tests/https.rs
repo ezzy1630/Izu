@@ -697,6 +697,7 @@ fn https_explicit_branch_scope_reports_unrelated_tags_and_pull_refs() {
     let source = GitSource::https(&server.url).expect("URL");
     let adapter = server.adapter();
     let options = ImportOptions {
+        tags: Vec::new(),
         refs: vec![RefImport {
             git_ref: "refs/heads/main".into(),
             native_ref: reference(),
@@ -725,4 +726,53 @@ fn https_explicit_branch_scope_reports_unrelated_tags_and_pull_refs() {
         ),
         Err(Error::Unsupported(_))
     ));
+}
+
+#[test]
+fn https_annotated_tag_import_and_leased_push_roundtrip() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let remote = fixture_remote(fixture.path());
+    let main = oid(&remote, "main");
+    git(
+        &remote,
+        &["tag", "-a", "annotated", "-m", "HTTPS annotation"],
+        None,
+    );
+    let tag = oid(&remote, "refs/tags/annotated");
+    let server = Server::start(fixture.path());
+    let source = GitSource::https(&server.url).expect("URL");
+    let inventory = server
+        .adapter()
+        .inventory(&source, &cancel())
+        .expect("HTTPS tag inventory");
+    let annotated = &inventory.tags["refs/tags/annotated"];
+    assert_eq!(annotated.object, tag);
+    assert_eq!(annotated.target, main);
+    assert_eq!(annotated.annotated_objects, [tag]);
+    assert!(inventory.unsupported.is_empty());
+    let target = fixture.path().join("native-tags");
+    let (repository, _) = server
+        .adapter()
+        .clone_into(&target, &source, &ImportOptions::default(), &cancel())
+        .expect("HTTPS tag clone");
+    assert_eq!(repository.view(&cancel()).expect("view").tags.len(), 1);
+    let request = PushRequest {
+        remote: source,
+        native_ref: RefName::new("annotated").expect("tag name"),
+        git_ref: "refs/tags/copied".into(),
+        expected_old: None,
+        non_fast_forward: NonFastForwardPolicy::Reject,
+        committer: None,
+    };
+    let pushed = server
+        .adapter()
+        .push_ref(&repository, &request, &cancel())
+        .expect("HTTPS tag push");
+    assert_eq!(pushed.verified, tag);
+    assert_eq!(oid(&remote, "refs/tags/copied"), tag);
+    assert!(matches!(
+        server.adapter().push_ref(&repository, &request, &cancel()),
+        Err(Error::LeaseMismatch { .. })
+    ));
+    git(&remote, &["fsck", "--strict"], None);
 }

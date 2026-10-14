@@ -1,6 +1,7 @@
 use crate::{
-    CheckEvidence, IntegrationCandidate, Limits, ModelError, ObjectId, ObjectKind, Operation,
-    RepositoryView, ResolvedTreeEntry, Revision, RevisionOrigin, Tree, TreeEntry, decode_metadata,
+    CheckEvidence, IntegrationCandidate, Limits, ModelError, NativeTag, ObjectId, ObjectKind,
+    Operation, RepositoryView, ResolvedTreeEntry, Revision, RevisionOrigin, TagTarget, Tree,
+    TreeEntry, decode_metadata,
 };
 
 /// Kind accompanies every object edge. A hash alone cannot prove that an
@@ -66,8 +67,28 @@ impl ReferencedObjects for Revision {
     }
 }
 
+impl ReferencedObjects for NativeTag {
+    fn visit_references(&self, visitor: &mut dyn FnMut(ObjectReference)) {
+        match self.target {
+            TagTarget::Revision { revision } => {
+                edge(visitor, ObjectKind::Revision, revision.object_id())
+            }
+            TagTarget::Tree { tree } => edge(visitor, ObjectKind::Tree, tree.object_id()),
+            TagTarget::Blob { blob } => edge(visitor, ObjectKind::Blob, blob),
+        }
+        if let Some(origin) = &self.origin {
+            for annotation in &origin.annotations {
+                edge(visitor, ObjectKind::Blob, annotation.raw);
+            }
+        }
+    }
+}
+
 impl ReferencedObjects for RepositoryView {
     fn visit_references(&self, visitor: &mut dyn FnMut(ObjectReference)) {
+        for tag in self.tags.values() {
+            tag.visit_references(visitor);
+        }
         for change in self.changes.values() {
             for head in &change.heads {
                 edge(visitor, ObjectKind::Revision, head.object_id());

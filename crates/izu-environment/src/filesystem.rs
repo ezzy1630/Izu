@@ -873,18 +873,43 @@ pub(crate) fn ensure_cache_root(path: &Path) -> Result<Directory> {
     } else {
         Path::new(".")
     };
+    if path.components().any(|part| {
+        !matches!(
+            part,
+            std::path::Component::Normal(_)
+                | std::path::Component::RootDir
+                | std::path::Component::CurDir
+        )
+    }) {
+        return Err(EnvironmentError::InvalidInput(
+            "cache path may not contain parent/prefix components".into(),
+        ));
+    }
     let mut directory = Directory::open(start).map_err(|error| io(start, error))?;
-    directory
-        .require_persistent_filesystem()
-        .map_err(|error| io(path, error))?;
     for part in path.components() {
         match part {
             std::path::Component::Normal(name) => {
                 let parent = directory;
-                directory = parent.ensure_dir(name).map_err(|error| io(path, error))?;
-                directory
-                    .require_persistent_filesystem()
-                    .map_err(|error| io(path, error))?;
+                directory = match parent.open_dir(name) {
+                    Ok(existing) => existing,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        // Existing ancestors may lead into a native mount from
+                        // a container's overlay root. Only a directory we write
+                        // and the final owned cache need the persistence policy.
+                        parent
+                            .require_persistent_filesystem()
+                            .map_err(|error| io(path, error))?;
+                        let created = parent.ensure_dir(name).map_err(|error| io(path, error))?;
+                        created
+                            .require_persistent_filesystem()
+                            .map_err(|error| io(path, error))?;
+                        created
+                    }
+                    Err(error) => return Err(io(path, error)),
+                };
+                // Preserve the entry persistence barrier even if another actor
+                // created this directory before we opened it. Traversing an
+                // existing mount ancestor does not admit cache writes there.
                 parent.sync().map_err(|error| io(path, error))?;
             }
             std::path::Component::RootDir | std::path::Component::CurDir => {}
@@ -895,6 +920,9 @@ pub(crate) fn ensure_cache_root(path: &Path) -> Result<Directory> {
             }
         }
     }
+    directory
+        .require_persistent_filesystem()
+        .map_err(|error| io(path, error))?;
     Ok(directory)
 }
 

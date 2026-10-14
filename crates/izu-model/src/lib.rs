@@ -26,7 +26,8 @@ pub use limits::{CancellationToken, Limits, Validate};
 pub use names::{RefName, RepoPath, SymlinkTarget};
 pub use records::{
     ChangeState, CheckEvidence, CheckInputs, CheckOutcome, CheckSpec, ConflictReason, FileMode,
-    Identity, IntegrationCandidate, Operation, RepositoryView, ResolvedTreeEntry, Revision,
-    RevisionOrigin, SourceRecord, Tree, TreeEntry, WorkspaceRecord,
+    GitTagAnnotation, GitTagOrigin, Identity, IntegrationCandidate, MetadataVersion, NativeTag,
+    Operation, RepositoryView, ResolvedTreeEntry, Revision, RevisionOrigin, SourceRecord,
+    TagTarget, Tree, TreeEntry, WorkspaceRecord,
 };
 pub use references::{MetadataObject, ObjectReference, ReferencedObjects, decode_object_metadata};

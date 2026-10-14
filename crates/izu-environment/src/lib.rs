@@ -18,7 +18,7 @@ pub use binding::{
     StartingEnvironmentReceipt,
 };
 pub use cache::{ArtifactSummary, CacheStatus, EnvironmentCache, ImportReceipt, RetentionPolicy};
-pub use error::{EnvironmentError, Result};
+pub use error::{DirectoryMetadataObservation, EnvironmentError, Result};
 pub use filesystem::{MaterializationMode, SharingPolicy, filesystem_available_bytes};
 pub use izu_model::CancellationToken;
 pub use materialize::{MaterializationReport, WorkspaceTarget};

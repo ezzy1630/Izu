@@ -382,24 +382,16 @@ pub fn require_durable_platform() -> io::Result<()> {
     }
 }
 
-/// Rejects known memory-backed filesystem types. A successful classification
-/// cannot prove that an otherwise ordinary filesystem has persistent hardware
-/// beneath it (for example, ext4 on a RAM block device).
+/// Refuses known volatile, shared and layered storage outside the first-release
+/// native-storage boundary. Passing classification does not prove persistence
+/// hardware or stable identity on an arbitrary mount; operation guards remain.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn require_persistent_file(file: &File) -> io::Result<()> {
     let stat = fs::fstatfs(file)?;
     #[cfg(target_os = "linux")]
-    let volatile = {
-        // Linux UAPI include/uapi/linux/magic.h. Masking preserves the 32-bit
-        // filesystem magic on both signed and unsigned fsword ABI variants.
-        // https://github.com/torvalds/linux/blob/master/include/uapi/linux/magic.h
-        let magic = i128::from(stat.f_type) & i128::from(u32::MAX);
-        matches!(magic, 0x0102_1994 | 0x8584_58f6 | 0x9584_58f6)
-    };
+    let refusal = linux_storage_refusal((i128::from(stat.f_type) & i128::from(u32::MAX)) as u32);
     #[cfg(target_os = "macos")]
-    let volatile = {
-        // Darwin's statfs f_fstypename is a fixed, NUL-terminated C character
-        // array. Copying bytes avoids FFI pointer/string construction entirely.
+    let refusal = {
         let mut name = [0_u8; 16];
         for (destination, source) in name.iter_mut().zip(stat.f_fstypename) {
             *destination = source as u8;
@@ -408,15 +400,65 @@ pub fn require_persistent_file(file: &File) -> io::Result<()> {
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(name.len());
-        matches!(&name[..end], b"tmpfs" | b"ramfs" | b"mfs" | b"devfs")
+        darwin_storage_refusal(&name[..end])
     };
-    if volatile {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "known volatile filesystem cannot acknowledge persistent storage",
-        ))
-    } else {
-        Ok(())
+    match refusal {
+        Some(reason) => Err(io::Error::new(io::ErrorKind::Unsupported, reason)),
+        None => Ok(()),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_storage_refusal(magic: u32) -> Option<&'static str> {
+    // General-purpose Linux UAPI filesystem IDs, not VCS implementation code:
+    // https://github.com/torvalds/linux/blob/master/include/uapi/linux/magic.h
+    match magic {
+        0x0102_1994 | 0x8584_58f6 | 0x9584_58f6 => {
+            Some("known volatile filesystem cannot acknowledge persistent storage")
+        }
+        0x6573_5546 | 0x0102_1997 | 0x00c0_ffee | 0x794c_7630 | 0x6969 | 0x517b | 0xff53_4d42
+        | 0xfe53_4d42 | 0x5346_414f | 0x6b41_4653 | 0x00c3_6400 | 0x7375_7245 => Some(
+            "release storage requires a native persistent filesystem; use an owned native volume instead of shared, network or layered storage",
+        ),
+        _ => None,
+    }
+}
+#[cfg(any(target_os = "macos", test))]
+fn darwin_storage_refusal(name: &[u8]) -> Option<&'static str> {
+    match name {
+        b"tmpfs" | b"ramfs" | b"mfs" | b"devfs" => {
+            Some("known volatile filesystem cannot acknowledge persistent storage")
+        }
+        b"nfs" | b"smbfs" | b"afpfs" | b"webdav" | b"fusefs" | b"osxfuse" | b"macfuse"
+        | b"virtiofs" => Some(
+            "release storage requires a native persistent filesystem; use native local storage instead of a shared or network mount",
+        ),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod storage_policy_tests {
+    use super::*;
+    #[test]
+    fn release_storage_refuses_shared_and_volatile_but_keeps_native_checks() {
+        for magic in [
+            0x01021994, 0x858458f6, 0x958458f6, 0x65735546, 0x01021997, 0x00c0ffee, 0x794c7630,
+            0x6969, 0xff534d42, 0xfe534d42,
+        ] {
+            assert!(linux_storage_refusal(magic).is_some());
+        }
+        for magic in [0xef53, 0x58465342, 0x9123683e] {
+            assert!(linux_storage_refusal(magic).is_none());
+        }
+        for name in [b"nfs".as_slice(), b"smbfs", b"osxfuse", b"tmpfs", b"webdav"] {
+            assert!(darwin_storage_refusal(name).is_some());
+        }
+        for name in [b"apfs".as_slice(), b"hfs"] {
+            assert!(darwin_storage_refusal(name).is_none());
+        }
+        // Unknown classification is never a persistence or native-platform proof.
+        assert!(linux_storage_refusal(0).is_none());
     }
 }
 

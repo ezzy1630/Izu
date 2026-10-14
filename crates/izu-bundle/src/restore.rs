@@ -105,6 +105,7 @@ pub fn restore(
         };
         let mut repository =
             Repository::initialize_archive_at(&stage, &staging_path, repository_options)?;
+        let _retention = repository.retention_lease(cancel)?;
         for id in verified.graph.sorted_ids()? {
             cancel.check()?;
             let node = verified

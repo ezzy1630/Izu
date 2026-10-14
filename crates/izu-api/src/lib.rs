@@ -138,8 +138,16 @@ impl Api {
         config
     }
 
-    fn git_adapter(&self) -> Result<izu_git::GitAdapter, ApiError> {
+    fn git_adapter_with_lfs(
+        &self,
+        preserve_lfs_pointers: bool,
+    ) -> Result<izu_git::GitAdapter, ApiError> {
         let config = izu_git::GitToolConfig {
+            lfs_policy: if preserve_lfs_pointers {
+                izu_git::LfsPolicy::PreservePointers
+            } else {
+                izu_git::LfsPolicy::Reject
+            },
             worker: Some(izu_git::WorkerLauncher {
                 executable: self.worker_executable.clone(),
                 prefix_args: vec![std::ffi::OsString::from("__process-worker")],
@@ -164,6 +172,32 @@ impl Api {
                 "At most eight explicit DER trust anchors of 64 KiB each are supported",
             ));
         }
+        if !matches!(source, izu_git::GitSource::Https(_))
+            && !transport.root_certificates.is_empty()
+        {
+            return Err(ApiError::invalid(
+                "TLS trust anchors require an explicit HTTPS source",
+            ));
+        }
+        let ssh = match (source, transport.ssh) {
+            (izu_git::GitSource::Ssh(url), Some(configuration)) => Some(izu_git::SshTransport {
+                url: url.clone(),
+                executable: configuration.executable,
+                identity_file: configuration.identity_file,
+                known_hosts_file: configuration.known_hosts_file,
+            }),
+            (izu_git::GitSource::Ssh(_), None) => {
+                return Err(ApiError::invalid(
+                    "SSH requires explicit executable, identity and known-hosts paths",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(ApiError::invalid(
+                    "SSH configuration requires an explicit SSH source",
+                ));
+            }
+            (_, None) => None,
+        };
         let authentication = match (&source, transport.authentication) {
             (_, None) => None,
             (
@@ -179,6 +213,11 @@ impl Api {
             }
         };
         let config = izu_git::GitToolConfig {
+            ssh,
+            lfs_policy: match transport.lfs_policy {
+                GitLfsPolicy::Reject => izu_git::LfsPolicy::Reject,
+                GitLfsPolicy::PreservePointers => izu_git::LfsPolicy::PreservePointers,
+            },
             worker: Some(izu_git::WorkerLauncher {
                 executable: self.worker_executable.clone(),
                 prefix_args: vec![std::ffi::OsString::from("__process-worker")],
@@ -198,6 +237,7 @@ impl Api {
         match operation {
             Operation::Capabilities {} => value(json!({
                 "schema_version":SCHEMA_VERSION,
+                "native_formats":{"object_frame":1,"readable_metadata":[1,2],"new_repository_metadata":2,"migration":"explicit_exact_operation_lease"},
                 "build":BuildIdentity::default(),
                 "operations":operation_names()?,
                 "local_checkpoint":"acknowledged only after required filesystem barriers; not a remote backup",
@@ -221,6 +261,7 @@ impl Api {
             }
             Operation::Inspect { context } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 value(
                     repo.workspace(selected_workspace(&repo, &context)?, cancel)
                         .map_err(engine_error)?,
@@ -228,6 +269,7 @@ impl Api {
             }
             Operation::Status { context } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let workspace = selected_workspace(&repo, &context)?;
                 let state = repo.workspace(workspace, cancel).map_err(engine_error)?;
                 let status = repo.status(workspace, cancel).map_err(engine_error)?;
@@ -252,6 +294,7 @@ impl Api {
                 after,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 match (before, after) {
                     (Some(before), Some(after)) => diff_details(
                         &repo,
@@ -281,6 +324,7 @@ impl Api {
             } => {
                 history_limit(limit)?;
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let start = match from {
                     Some(id) => parse(&id, "from revision")?,
                     None => {
@@ -294,6 +338,7 @@ impl Api {
             }
             Operation::Show { context, revision } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 value(
                     repo.revision(parse(&revision, "revision")?, cancel)
                         .map_err(engine_error)?,
@@ -374,6 +419,7 @@ impl Api {
                 from,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 value(
                     repo.fork_workspace(name, path, parse(&from, "from revision")?, cancel)
                         .map_err(engine_error)?,
@@ -381,6 +427,7 @@ impl Api {
             }
             Operation::WorkspaceList { context } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 value(repo.view(cancel).map_err(engine_error)?.workspaces)
             }
             Operation::WorkspaceClose { context } => {
@@ -409,6 +456,7 @@ impl Api {
                 revision,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let name = RefName::new(name).map_err(model_error)?;
                 let operation = repo
                     .update_ref(
@@ -419,6 +467,60 @@ impl Api {
                     )
                     .map_err(engine_error)?;
                 value(json!({"operation":operation,"reference":name}))
+            }
+            Operation::TagList { context } => value(
+                repository(&context)?
+                    .view(cancel)
+                    .map_err(engine_error)?
+                    .tags,
+            ),
+            Operation::TagSet {
+                context,
+                name,
+                expected,
+                tag,
+            } => {
+                let repo = repository(&context)?;
+                let operation = repo
+                    .update_tag(
+                        izu_engine::TagUpdate {
+                            name: RefName::new(name).map_err(model_error)?,
+                            expected: expected.map(native_tag).transpose()?,
+                            new: tag.map(native_tag).transpose()?,
+                        },
+                        cancel,
+                    )
+                    .map_err(engine_error)?;
+                value(json!({"operation": operation}))
+            }
+            Operation::MetadataInspect { context } => {
+                let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
+                let head = repo.current_operation(cancel).map_err(engine_error)?;
+                let version = repo
+                    .operation(head, cancel)
+                    .map_err(engine_error)?
+                    .view
+                    .metadata_version;
+                value(
+                    json!({"operation":head,"metadata_version":if version.is_some(){2}else{1},"object_frame_version":1,"readable_metadata_versions":[1,2]}),
+                )
+            }
+            Operation::MetadataMigrate {
+                context,
+                expected_operation,
+                version,
+            } => {
+                if version != 2 {
+                    return Err(ApiError::invalid(
+                        "Only explicit migration to metadata version two is supported",
+                    ));
+                }
+                let repo = repository(&context)?;
+                let operation = repo
+                    .migrate_metadata_v2(parse(&expected_operation, "expected operation")?, cancel)
+                    .map_err(engine_error)?;
+                value(json!({"operation":operation,"metadata_version":2}))
             }
             Operation::Restore {
                 context,
@@ -528,6 +630,7 @@ impl Api {
                 author,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let checks = parse_checks(checks)?;
                 let prepared = repo
                     .prepare_merge(
@@ -554,6 +657,7 @@ impl Api {
                 author,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let candidate = parse(&candidate, "candidate")?;
                 let record = repo.candidate(candidate, cancel).map_err(engine_error)?;
                 let (path, entry) =
@@ -576,6 +680,7 @@ impl Api {
                 author,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let revision = parse(&revision, "revision")?;
                 let record = repo.revision(revision, cancel).map_err(engine_error)?;
                 let (path, entry) = resolve_entry(&repo, record.tree, path, resolution, cancel)?;
@@ -597,6 +702,7 @@ impl Api {
             } => {
                 timeout(timeout_seconds)?;
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let mut runtime = izu_runtime::Runtime::open(
                     repo.metadata_path().join("runtime"),
                     self.runtime_config(),
@@ -657,9 +763,49 @@ impl Api {
                     .recover(cancel)
                     .map_err(engine_error)?,
             ),
+            Operation::StoragePlan { context, objects } => {
+                let repo = repository(&context)?;
+                let objects = reclamation_ids(objects)?;
+                let plan = repo
+                    .plan_reclamation(&objects, cancel)
+                    .map_err(engine_error)?;
+                value(
+                    json!({"selected":plan.selected,"payload_bytes":plan.payload_bytes,
+                    "retained_objects":plan.retained_objects,"history_retained":true}),
+                )
+            }
+            Operation::StorageReclaim { context, objects } => {
+                let repo = repository(&context)?;
+                let objects = reclamation_ids(objects)?;
+                let (receipt, error) = match repo
+                    .reclaim_selected(&objects, cancel)
+                    .map_err(engine_error)?
+                {
+                    izu_engine::ReclaimOutcome::Durable(receipt) => (receipt, None),
+                    izu_engine::ReclaimOutcome::VisibleButUncertain { receipt, error } => {
+                        (receipt, Some(error))
+                    }
+                };
+                let mut data = value(
+                    json!({"selected":receipt.selected,"payload_bytes":receipt.payload_bytes,
+                    "retained_objects":receipt.retained_objects,"history_retained":true}),
+                )?;
+                if let Some(error) = error {
+                    data.uncertainty = Some(ApiError {
+                        code: ErrorCode::PublicationUncertain,
+                        message: format!("Selected object names were removed; reclamation persistence is uncertain: {error}"),
+                        next_action: "Preserve the repository and reclamation quarantine. Run recover and verify before requesting a fresh exact selection; recovery restores interrupted removals.".into(),
+                        operation_id: None,
+                        recovery_operation_id: None,
+                        retained_paths: vec![repo.metadata_path().join("reclamation")].into_boxed_slice(),
+                    });
+                }
+                Ok(data)
+            }
             Operation::JobsList { context, limit } => {
                 history_limit(limit)?;
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let selected = context
                     .workspace
                     .as_ref()
@@ -678,6 +824,7 @@ impl Api {
             }
             Operation::JobStatus { context, job } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let runtime = izu_runtime::Runtime::open(
                     repo.metadata_path().join("runtime"),
                     self.runtime_config(),
@@ -691,6 +838,7 @@ impl Api {
             }
             Operation::JobCancel { context, job } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let mut runtime = izu_runtime::Runtime::open(
                     repo.metadata_path().join("runtime"),
                     self.runtime_config(),
@@ -706,6 +854,7 @@ impl Api {
                 operator_note,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let mut runtime = izu_runtime::Runtime::open(
                     repo.metadata_path().join("runtime"),
                     self.runtime_config(),
@@ -721,6 +870,7 @@ impl Api {
             }
             Operation::WriterStatus { context } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let workspace = selected_workspace(&repo, &context)?;
                 value(
                     json!({"workspace":workspace,"intent":repo.writer_intent(workspace, cancel).map_err(engine_error)?}),
@@ -732,6 +882,7 @@ impl Api {
                 operator_note,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let workspace = selected_workspace(&repo, &context)?;
                 let token = izu_engine::WriterToken::new(token).map_err(engine_error)?;
                 value(
@@ -751,6 +902,7 @@ impl Api {
                 trusted,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let recipe = environment_recipe(&recipe_json, trusted)?;
                 let binding = environment_cache(&repo, None)?
                     .binding(&recipe, cancel)
@@ -775,6 +927,7 @@ impl Api {
                 trusted,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let recipe = environment_recipe(&recipe_json, trusted)?;
                 let cache = environment_cache(&repo, cache)?;
                 value(cache.status(&recipe, cancel).map_err(environment_error)?)
@@ -794,6 +947,7 @@ impl Api {
                     ));
                 }
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let recipe = environment_recipe(&recipe_json, trusted)?;
                 value(
                     environment_cache(&repo, cache)?
@@ -827,6 +981,7 @@ impl Api {
             }
             Operation::BundleCreate { context, path } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let root = repo.current_operation(cancel).map_err(engine_error)?;
                 let receipt = izu_bundle::create(
                     &repo,
@@ -863,10 +1018,36 @@ impl Api {
                     receipt.recovery.operation.to_string(),
                 )
             }
+            Operation::GitClone {
+                destination,
+                source,
+                refs,
+                tags,
+                transport,
+            } => {
+                let source = git_location(source)?;
+                let adapter = self.git_adapter_for(&source, transport)?;
+                let (repo, import) = adapter
+                    .clone_into(&destination, &source, &git_import_options(refs, tags)?, cancel)
+                    .map_err(|failure| {
+                        let mut error = git_error(failure);
+                        if destination.join(".izu").exists() {
+                            error.retain_paths([destination.clone()]);
+                            error.next_action = "Clone may have initialized or imported native history. Preserve and inspect the destination and reported operation before retrying.".into();
+                        }
+                        error
+                    })?;
+                let workspace = repo
+                    .workspace(repo.workspace_id(), cancel)
+                    .map_err(engine_error)?;
+                let operation = repo.current_operation(cancel).map_err(engine_error)?;
+                value(json!({"workspace":workspace,"operation":operation,"import":import}))
+            }
             Operation::GitImport {
                 context,
                 source,
                 refs,
+                tags,
                 transport,
             } => {
                 let source = git_location(source)?;
@@ -876,7 +1057,7 @@ impl Api {
                         .import_into(
                             &repository(&context)?,
                             &source,
-                            &git_import_options(refs)?,
+                            &git_import_options(refs, tags)?,
                             cancel,
                         )
                         .map_err(git_error)?,
@@ -886,8 +1067,9 @@ impl Api {
                 context,
                 target,
                 committer,
+                preserve_lfs_pointers,
             } => value(
-                self.git_adapter()?
+                self.git_adapter_with_lfs(preserve_lfs_pointers)?
                     .export_to(
                         &repository(&context)?,
                         &target,
@@ -903,6 +1085,7 @@ impl Api {
                 context,
                 source,
                 refs,
+                tags,
                 transport,
             } => {
                 let source = git_location(source)?;
@@ -911,7 +1094,7 @@ impl Api {
                         .fetch_into(
                             &repository(&context)?,
                             &source,
-                            &git_import_options(refs)?,
+                            &git_import_options(refs, tags)?,
                             cancel,
                         )
                         .map_err(git_error)?,
@@ -1266,6 +1449,28 @@ fn cancelled() -> ApiError {
     }
 }
 
+fn reclamation_ids(objects: Vec<String>) -> Result<Vec<izu_model::ObjectId>, ApiError> {
+    if objects.is_empty() || objects.len() > 4096 {
+        return Err(ApiError::invalid(
+            "Reclamation requires 1..=4096 exact object IDs",
+        ));
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(objects.len())
+        .map_err(|_| ApiError::invalid("Cannot allocate reclamation selection"))?;
+    for object in objects {
+        let id = parse(&object, "reclamation object")?;
+        if !unique.insert(id) {
+            return Err(ApiError::invalid(
+                "Reclamation selection contains duplicate IDs",
+            ));
+        }
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
 fn model_error(error: izu_model::ModelError) -> ApiError {
     if matches!(error, izu_model::ModelError::Cancelled) {
         cancelled()
@@ -1282,17 +1487,20 @@ fn engine_error(error: izu_engine::EngineError) -> ApiError {
     };
     let code = match error.code() {
         "cancelled" => ErrorCode::Cancelled,
-        "stale_workspace" | "stale_ref" | "source_changed" | "stale_check_attempt" => {
-            ErrorCode::StaleExpectation
-        }
+        "stale_workspace"
+        | "stale_ref"
+        | "stale_tag"
+        | "source_changed"
+        | "stale_check_attempt" => ErrorCode::StaleExpectation,
         "missing_check" | "no_required_checks" | "evidence_mismatch" => ErrorCode::MissingCheck,
         "publication_uncertain" | "restoration_uncertain" => ErrorCode::PublicationUncertain,
         "not_repository" | "unknown_workspace" | "unknown_revision" | "unknown_candidate" => {
             ErrorCode::NotFound
         }
-        "unsupported_platform" | "unsupported_entry" | "incompatible_path" => {
-            ErrorCode::UnsupportedFeature
-        }
+        "unsupported_platform"
+        | "unsupported_entry"
+        | "incompatible_path"
+        | "metadata_migration_required" => ErrorCode::UnsupportedFeature,
         "invalid_marker" | "uninitialized" => ErrorCode::CorruptData,
         "invalid_input" | "invalid_model" | "protected_path" | "resource_limit" => {
             ErrorCode::InvalidRequest
@@ -1305,10 +1513,15 @@ fn engine_error(error: izu_engine::EngineError) -> ApiError {
         | "workspace_name_exists"
         | "workspace_busy"
         | "uncommitted_source"
-        | "directory_not_empty" => ErrorCode::Conflict,
+        | "directory_not_empty"
+        | "reclamation_blocked" => ErrorCode::Conflict,
         _ => ErrorCode::Failure,
     };
-    let next_action = if error.code() == "uncommitted_source" {
+    let next_action = if error.code() == "metadata_migration_required" {
+        "Inspect `izu format inspect`; preserve a native bundle and explicitly migrate with the exact operation lease using `izu format migrate --to 2 --expect-operation ID`."
+    } else if error.code() == "reclamation_blocked" {
+        "Preserve unique objects and inspect the exact retention entry. A managed writer requires an explicit stopped-and-reaped acknowledgement for its exact token before reclamation. Unknown entries require investigation."
+    } else if error.code() == "uncommitted_source" {
         "Preserve the selected edits. Commit or reconcile them before updating, undoing, or reverting this source."
     } else if error.code() == "restoration_failed" {
         "Restoration may have changed part of the source. Preserve the directory and recovery originals; inspect status, operations, and recover before any retry."
@@ -1383,10 +1596,54 @@ fn git_location(location: GitLocation) -> Result<izu_git::GitSource, ApiError> {
     match location {
         GitLocation::Local(path) => Ok(izu_git::GitSource::local(path)),
         GitLocation::Https(location) => izu_git::GitSource::https(location.url).map_err(git_error),
+        GitLocation::Ssh(location) => izu_git::GitSource::ssh(location.ssh_url).map_err(git_error),
     }
 }
 
-fn git_import_options(refs: Vec<GitImportRef>) -> Result<izu_git::ImportOptions, ApiError> {
+fn native_tag(input: NativeTagInput) -> Result<izu_model::NativeTag, ApiError> {
+    use izu_model::{GitTagAnnotation, GitTagOrigin, NativeTag, TagTarget};
+    let target = match input.target {
+        TagTargetInput::Revision { revision } => TagTarget::Revision {
+            revision: parse(&revision, "tag revision")?,
+        },
+        TagTargetInput::Tree { tree } => TagTarget::Tree {
+            tree: parse(&tree, "tag tree")?,
+        },
+        TagTargetInput::Blob { blob } => TagTarget::Blob {
+            blob: parse(&blob, "tag blob")?,
+        },
+    };
+    let origin = input
+        .origin
+        .map(|origin| {
+            if origin.annotations.len() > 64 {
+                return Err(ApiError::invalid("At most 64 tag annotations are allowed"));
+            }
+            let annotations = origin
+                .annotations
+                .into_iter()
+                .map(|annotation| {
+                    Ok(GitTagAnnotation {
+                        object_id: annotation.object_id,
+                        raw: parse(&annotation.raw, "tag annotation blob")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?;
+            Ok(GitTagOrigin {
+                target_object_id: origin.target_object_id,
+                annotations,
+            })
+        })
+        .transpose()?;
+    let tag = NativeTag { target, origin };
+    tag.validate(&Limits::default()).map_err(model_error)?;
+    Ok(tag)
+}
+
+fn git_import_options(
+    refs: Vec<GitImportRef>,
+    tags: Vec<GitImportTag>,
+) -> Result<izu_git::ImportOptions, ApiError> {
     if refs.len() > 1024 {
         return Err(ApiError::invalid(
             "At most 1024 explicit Git references are allowed",
@@ -1402,7 +1659,22 @@ fn git_import_options(refs: Vec<GitImportRef>) -> Result<izu_git::ImportOptions,
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
-    Ok(izu_git::ImportOptions { refs })
+    if tags.len() > 1024 {
+        return Err(ApiError::invalid(
+            "At most 1024 explicit Git tags are allowed",
+        ));
+    }
+    let tags = tags
+        .into_iter()
+        .map(|tag| {
+            Ok(izu_git::TagImport {
+                git_ref: tag.git_ref,
+                native_tag: RefName::new(tag.native_tag).map_err(model_error)?,
+                expected: tag.expected.map(native_tag).transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(izu_git::ImportOptions { refs, tags })
 }
 
 fn git_error(error: izu_git::Error) -> ApiError {

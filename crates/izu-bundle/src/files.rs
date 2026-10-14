@@ -42,6 +42,7 @@ pub fn create<S: ObjectSource + ?Sized>(
 ) -> Result<BundleReceipt> {
     options.validate()?;
     cancel.check()?;
+    let _retention = source.retain(cancel)?;
     validate_path(output, options)?;
     izu_platform::require_durable_platform()
         .map_err(|error| io("require durable artifact platform", error))?;

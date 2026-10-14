@@ -116,3 +116,17 @@ Directory symlinks and broken symlinks are entries whose targets are hashed
 without following them. Ordinary generated directories retain their existing
 exclusions; a symlink with such a directory name remains an entry. `.git` is
 always excluded, including a directory symlink.
+
+For qualifying Rust checks in the maintainer's isolated setup, use a fresh target
+when integrated files or cached compiler metadata could be stale:
+
+```sh
+python3 scripts/record-verification.py --fresh-target UNIQUE_LABEL \
+  /absolute/path/to/izu/scripts/izu-env cargo test --workspace --locked
+```
+
+The recorder freezes and hashes the source and allocates a new empty Cargo target
+inside that receipt. The helper honors only that explicit project-local target.
+This prevents copied source timestamps from making Cargo reuse older local crate
+metadata. Cached development checks remain useful during iteration; final package
+builds and acceptance still need their own exact source and executable identities.

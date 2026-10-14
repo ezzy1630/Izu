@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::registry::{FORMAT_VERSION, read_json, write_json_durable};
 use crate::types::{DirectoryIdentity, io_error, now_ms, validate_argv};
-use crate::{CommandOutcome, EnvironmentPolicy, JobId, RunRequest, RuntimeError};
+use crate::{
+    CancellationReason, CommandOutcome, CooperativeInterrupt, EnvironmentPolicy, JobId, RunRequest,
+    RuntimeError,
+};
 
 const MAX_TICKET_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RESULT_BYTES: u64 = 1024 * 1024;
@@ -27,6 +30,8 @@ pub(crate) struct WorkerTicket {
     directory: DirectoryIdentity,
     argv: Vec<String>,
     timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cooperative_interrupt: Option<CooperativeInterrupt>,
     environment: EnvironmentPolicy,
     env_overlay: BTreeMap<String, String>,
 }
@@ -39,6 +44,7 @@ impl WorkerTicket {
             directory: request.workspace.directory,
             argv: request.argv.clone(),
             timeout_ms: request.timeout_ms,
+            cooperative_interrupt: request.cooperative_interrupt,
             environment: request.environment,
             env_overlay: request.env_overlay.clone(),
         }
@@ -52,6 +58,23 @@ pub(crate) struct WorkerResult {
     pub id: JobId,
     pub finished_at_unix_ms: i64,
     pub outcome: CommandOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooperative_stop: Option<CooperativeStop>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum CooperativeStop {
+    InterruptedAndExited {
+        reason: CancellationReason,
+    },
+    GraceExpired {
+        reason: CancellationReason,
+    },
+    InterruptFailed {
+        reason: CancellationReason,
+        message: String,
+    },
 }
 
 pub(crate) fn write_ticket(
@@ -186,6 +209,9 @@ pub fn worker_main(ticket_path: &Path) -> Result<(), RuntimeError> {
         .map_err(|error| io_error("bind pinned worker cwd", &ticket.cwd, error.into()))?;
     let parent_alive = Arc::new(AtomicBool::new(true));
     let watcher = parent_alive.clone();
+    let interrupt_requested = Arc::new(AtomicBool::new(false));
+    let interrupt_watcher = interrupt_requested.clone();
+    let cooperative = ticket.cooperative_interrupt.is_some();
     thread::Builder::new()
         .name("izu-parent-watch".into())
         .spawn(move || {
@@ -194,6 +220,9 @@ pub fn worker_main(ticket_path: &Path) -> Result<(), RuntimeError> {
             loop {
                 match stdin.read(&mut byte) {
                     Ok(0) => break,
+                    Ok(_) if cooperative && byte[0] == b'I' => {
+                        interrupt_watcher.store(true, Ordering::Release);
+                    }
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => break,
@@ -228,6 +257,7 @@ pub fn worker_main(ticket_path: &Path) -> Result<(), RuntimeError> {
                 format_version: FORMAT_VERSION,
                 id: ticket.id,
                 finished_at_unix_ms: now_ms()?,
+                cooperative_stop: None,
                 outcome: CommandOutcome::SpawnFailed {
                     message: error.to_string(),
                 },
@@ -242,9 +272,35 @@ pub fn worker_main(ticket_path: &Path) -> Result<(), RuntimeError> {
             return retain_leader(&parent_alive);
         }
     };
+    let mut interruption: Option<(std::time::Instant, CancellationReason)> = None;
     loop {
-        if !parent_alive.load(Ordering::Acquire) || std::time::Instant::now() >= execution_deadline
+        if !parent_alive.load(Ordering::Acquire)
+            || (ticket.cooperative_interrupt.is_none()
+                && std::time::Instant::now() >= execution_deadline)
         {
+            return crate::os::kill_current_group();
+        }
+        if let Some((deadline, reason)) = &interruption
+            && std::time::Instant::now() >= *deadline
+        {
+            let result = WorkerResult {
+                format_version: FORMAT_VERSION,
+                id: ticket.id,
+                finished_at_unix_ms: now_ms()?,
+                outcome: CommandOutcome::SpawnFailed {
+                    message: "cooperative interrupt grace expired".into(),
+                },
+                cooperative_stop: Some(CooperativeStop::GraceExpired {
+                    reason: reason.clone(),
+                }),
+            };
+            write_json_durable(
+                &directory,
+                OsStr::new("result.json"),
+                &report_path,
+                &result,
+                MAX_RESULT_BYTES,
+            )?;
             return crate::os::kill_current_group();
         }
         if let Some(status) = child
@@ -262,6 +318,8 @@ pub fn worker_main(ticket_path: &Path) -> Result<(), RuntimeError> {
                 format_version: FORMAT_VERSION,
                 id: ticket.id,
                 finished_at_unix_ms: now_ms()?,
+                cooperative_stop: interruption
+                    .map(|(_, reason)| CooperativeStop::InterruptedAndExited { reason }),
                 outcome: CommandOutcome::Exit {
                     code: status.code(),
                     signal,
@@ -275,6 +333,47 @@ pub fn worker_main(ticket_path: &Path) -> Result<(), RuntimeError> {
                 MAX_RESULT_BYTES,
             )?;
             return retain_leader(&parent_alive);
+        }
+        let expired = std::time::Instant::now() >= execution_deadline;
+        if interruption.is_none() && (expired || interrupt_requested.load(Ordering::Acquire)) {
+            let Some(policy) = ticket.cooperative_interrupt else {
+                return crate::os::kill_current_group();
+            };
+            let reason = if expired {
+                CancellationReason::Deadline
+            } else {
+                CancellationReason::Requested
+            };
+            // This Child has never been reaped. Its live ownership authorizes the
+            // one signal; no saved PID or reopened registry can authorize it.
+            if let Err(error) = crate::os::interrupt_child(&child) {
+                let result = WorkerResult {
+                    format_version: FORMAT_VERSION,
+                    id: ticket.id,
+                    finished_at_unix_ms: now_ms()?,
+                    outcome: CommandOutcome::SpawnFailed {
+                        message: error.to_string(),
+                    },
+                    cooperative_stop: Some(CooperativeStop::InterruptFailed {
+                        reason,
+                        message: error.to_string(),
+                    }),
+                };
+                write_json_durable(
+                    &directory,
+                    OsStr::new("result.json"),
+                    &report_path,
+                    &result,
+                    MAX_RESULT_BYTES,
+                )?;
+                return crate::os::kill_current_group();
+            }
+            let until = std::time::Instant::now()
+                .checked_add(policy.grace())
+                .ok_or_else(|| {
+                    RuntimeError::Invalid("cooperative interrupt deadline overflow".into())
+                })?;
+            interruption = Some((until, reason));
         }
         thread::sleep(Duration::from_millis(5));
     }

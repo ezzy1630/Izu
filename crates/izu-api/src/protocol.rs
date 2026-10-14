@@ -89,6 +89,9 @@ pub struct LaunchArguments {
     pub argv: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub timeout_seconds: u64,
+    /// Opt-in grace for a cooperating adapter which stops its detached tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooperative_interrupt_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -129,12 +132,69 @@ pub struct GitImportRef {
     pub expected: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TagTargetInput {
+    Revision { revision: String },
+    Tree { tree: String },
+    Blob { blob: String },
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitTagAnnotationInput {
+    pub object_id: String,
+    pub raw: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitTagOriginInput {
+    pub target_object_id: String,
+    pub annotations: Vec<GitTagAnnotationInput>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeTagInput {
+    pub target: TagTargetInput,
+    pub origin: Option<GitTagOriginInput>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitImportTag {
+    pub git_ref: String,
+    pub native_tag: String,
+    pub expected: Option<NativeTagInput>,
+}
+
 /// Legacy string paths remain local. HTTPS requires an explicit URL object.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum GitLocation {
     Local(PathBuf),
     Https(HttpsLocation),
+    Ssh(SshLocation),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SshLocation {
+    pub ssh_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SshConfiguration {
+    pub executable: PathBuf,
+    pub identity_file: PathBuf,
+    pub known_hosts_file: PathBuf,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GitLfsPolicy {
+    #[default]
+    Reject,
+    /// Preserve pointers only; external content is neither hydrated nor uploaded.
+    PreservePointers,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -161,6 +221,10 @@ pub struct GitTransport {
     pub authentication: Option<GitAuthentication>,
     #[serde(default)]
     pub root_certificates: Vec<Vec<u8>>,
+    #[serde(default)]
+    pub ssh: Option<SshConfiguration>,
+    #[serde(default)]
+    pub lfs_policy: GitLfsPolicy,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -240,6 +304,23 @@ pub enum Operation {
         name: String,
         expected: Option<String>,
         revision: Option<String>,
+    },
+    TagList {
+        context: ReadContext,
+    },
+    TagSet {
+        context: ReadContext,
+        name: String,
+        expected: Option<NativeTagInput>,
+        tag: Option<NativeTagInput>,
+    },
+    MetadataInspect {
+        context: ReadContext,
+    },
+    MetadataMigrate {
+        context: ReadContext,
+        expected_operation: String,
+        version: u32,
     },
     Restore {
         context: MutationContext,
@@ -334,6 +415,14 @@ pub enum Operation {
     Recover {
         context: ReadContext,
     },
+    StoragePlan {
+        context: ReadContext,
+        objects: Vec<String>,
+    },
+    StorageReclaim {
+        context: ReadContext,
+        objects: Vec<String>,
+    },
     JobsList {
         context: ReadContext,
         limit: usize,
@@ -405,10 +494,21 @@ pub enum Operation {
         destination: PathBuf,
         workspace: Option<String>,
     },
+    GitClone {
+        destination: PathBuf,
+        source: GitLocation,
+        refs: Vec<GitImportRef>,
+        #[serde(default)]
+        tags: Vec<GitImportTag>,
+        #[serde(default)]
+        transport: GitTransport,
+    },
     GitImport {
         context: ReadContext,
         source: GitLocation,
         refs: Vec<GitImportRef>,
+        #[serde(default)]
+        tags: Vec<GitImportTag>,
         #[serde(default)]
         transport: GitTransport,
     },
@@ -416,11 +516,15 @@ pub enum Operation {
         context: ReadContext,
         target: PathBuf,
         committer: Option<GitCommitter>,
+        #[serde(default)]
+        preserve_lfs_pointers: bool,
     },
     GitFetch {
         context: ReadContext,
         source: GitLocation,
         refs: Vec<GitImportRef>,
+        #[serde(default)]
+        tags: Vec<GitImportTag>,
         #[serde(default)]
         transport: GitTransport,
     },
@@ -464,6 +568,10 @@ impl Operation {
             Self::WorkspaceClose { .. } => "workspace_close",
             Self::RefList { .. } => "ref_list",
             Self::RefSet { .. } => "ref_set",
+            Self::TagList { .. } => "tag_list",
+            Self::TagSet { .. } => "tag_set",
+            Self::MetadataInspect { .. } => "metadata_inspect",
+            Self::MetadataMigrate { .. } => "metadata_migrate",
             Self::Restore { .. } => "restore",
             Self::Update { .. } => "update",
             Self::Undo { .. } => "undo",
@@ -481,6 +589,8 @@ impl Operation {
             Self::ManagedRun { .. } => "managed_run",
             Self::Verify { .. } => "verify",
             Self::Recover { .. } => "recover",
+            Self::StoragePlan { .. } => "storage_plan",
+            Self::StorageReclaim { .. } => "storage_reclaim",
             Self::JobsList { .. } => "jobs_list",
             Self::JobStatus { .. } => "job_status",
             Self::JobCancel { .. } => "job_cancel",
@@ -496,6 +606,7 @@ impl Operation {
             Self::BundleInspect { .. } => "bundle_inspect",
             Self::BundleVerify { .. } => "bundle_verify",
             Self::BundleRestore { .. } => "bundle_restore",
+            Self::GitClone { .. } => "git_clone",
             Self::GitImport { .. } => "git_import",
             Self::GitExport { .. } => "git_export",
             Self::GitFetch { .. } => "git_fetch",

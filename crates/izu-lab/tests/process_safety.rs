@@ -60,23 +60,70 @@ fn bounded_child_drains_large_output_and_preserves_failure() {
     assert_eq!(run.exit_code, Some(7));
     assert!(run.output_truncated);
     assert_eq!(run.stdout.len(), 128);
+    assert!(run.stdout_eof && run.stderr_eof);
     assert!(!run.succeeded());
 }
 #[cfg(unix)]
 #[test]
-fn deadline_reaps_only_owned_child() {
+fn short_whole_deadline_reports_prelaunch_expiry_or_confirmed_owned_cleanup() {
     let temp = tempfile::tempdir().expect("owned scratch");
     let runner = runner("/bin/sh", Duration::from_millis(25), 128, false);
-    let run = runner
-        .run(
-            &["-c".into(), "while :; do :; done".into()],
-            temp.path(),
-            None,
-        )
-        .expect("execution");
-    assert!(run.timed_out);
-    assert!(!run.succeeded());
-    assert!(run.elapsed_ns < 1_000_000_000);
+    let mut unrelated = std::process::Command::new("/bin/sh");
+    unrelated.args(["-c", "while :; do :; done"]);
+    let mut unrelated = izu_process::OwnedProcess::spawn_until(
+        &mut unrelated,
+        std::time::Instant::now() + Duration::from_secs(2),
+        &|| false,
+    )
+    .expect("independent owned child");
+    let started = std::time::Instant::now();
+    let result = runner.run(
+        &["-c".into(), "printf started > started.txt; (sleep 0.15; printf escaped > escaped.txt) & while :; do :; done".into()],
+        temp.path(),
+        None,
+    );
+    match result {
+        Ok(run) => {
+            assert!(run.timed_out);
+            assert!(!run.succeeded());
+            assert!(run.output_capture_error.is_none(), "{run:?}");
+            assert!(run.stdout_eof && run.stderr_eof);
+            assert!(run.cleanup_status.contains("AbsentObserved"), "{run:?}");
+            assert!(
+                run.cleanup_status.contains("leader_reaped: true"),
+                "{run:?}"
+            );
+            assert!(run.elapsed_ns < 1_000_000_000);
+        }
+        Err(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            assert!(matches!(
+                error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<izu_process::RunError>()),
+                Some(izu_process::RunError::TimedOut)
+            ));
+            assert!(
+                !temp.path().join("started.txt").exists(),
+                "prelaunch expiry cannot start target"
+            );
+        }
+    }
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        !unrelated.observe_exit().unwrap(),
+        "deadline must preserve unrelated child"
+    );
+    assert!(
+        unrelated
+            .stop(Duration::from_secs(2))
+            .cooperative_stop_succeeded()
+    );
+    thread::sleep(Duration::from_millis(250));
+    assert!(
+        !temp.path().join("escaped.txt").exists(),
+        "deadline cannot leave writer running"
+    );
 }
 #[cfg(unix)]
 #[test]
@@ -107,6 +154,7 @@ fn exited_leader_cannot_leave_inherited_pipe_writer_running() {
         .expect("group contained");
     assert_eq!(run.stdout, "acknowledged");
     assert!(run.succeeded());
+    assert!(run.stdout_eof && run.stderr_eof);
     thread::sleep(Duration::from_millis(250));
     assert!(!temp.path().join("escaped.txt").exists());
 }

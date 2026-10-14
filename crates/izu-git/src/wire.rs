@@ -226,6 +226,47 @@ fn exchange(
     if cancel.is_cancelled() {
         return Err(Error::Cancelled);
     }
+    if url.starts_with("ssh://") {
+        let advertisement_limit = tool
+            .config
+            .limits
+            .max_refs
+            .checked_mul(1200)
+            .and_then(|length| length.checked_add(64 * 1024))
+            .ok_or(Error::Limit("SSH advertisement"))?;
+        let output_limit = limit
+            .checked_add(advertisement_limit)
+            .ok_or(Error::Limit("SSH response"))?;
+        let response = crate::ssh::exchange(
+            tool,
+            url,
+            service,
+            body.as_deref().unwrap_or(b"0000"),
+            output_limit,
+            cancel,
+        )?;
+        let mut position = 0;
+        while packet(&response, &mut position)?.is_some() {}
+        if position > advertisement_limit {
+            return Err(Error::Limit("SSH advertisement"));
+        }
+        let mut advertised = Vec::new();
+        append_packet(&mut advertised, format!("# service={service}\n").as_bytes())?;
+        advertised.extend_from_slice(b"0000");
+        advertised.extend_from_slice(&response[..position]);
+        advertisement(&advertised, service, &tool.config.limits)?;
+        if body.is_none() {
+            if position != response.len() {
+                return Err(invalid("trailing SSH discovery data"));
+            }
+            return Ok(advertised);
+        }
+        let payload = &response[position..];
+        if payload.len() > limit {
+            return Err(Error::Limit("SSH response"));
+        }
+        return Ok(payload.to_vec());
+    }
     let validated = crate::GitSource::https(url)?;
     let crate::GitSource::Https(url) = validated else {
         return Err(invalid("HTTPS URL required"));
@@ -429,7 +470,7 @@ pub(crate) fn fetch(
     let max = format!("--max-input-size={}", tool.config.limits.max_pack_bytes);
     tool.run_pack(
         cache,
-        "index admitted HTTP pack",
+        "index admitted remote pack",
         &GitTool::args(&[
             "-c",
             "pack.writeReverseIndex=false",
@@ -531,47 +572,7 @@ pub(crate) fn push(
         .ok_or_else(|| (Box::new(Error::Limit("publication receipt")), true))?;
     let response = exchange(tool, url, RECEIVE, Some(body), limit, cancel)
         .map_err(|error| (Box::new(error), false))?;
-    let parsed = (|| -> Result<Option<String>> {
-        let mut position = 0;
-        let unpack =
-            packet(&response, &mut position)?.ok_or_else(|| invalid("missing unpack receipt"))?;
-        let unpack = std::str::from_utf8(unpack)
-            .map_err(|_| invalid("non-UTF8 unpack receipt"))?
-            .strip_suffix('\n')
-            .ok_or_else(|| invalid("unterminated unpack receipt"))?;
-        let unpack = unpack
-            .strip_prefix("unpack ")
-            .filter(|message| !message.is_empty() && !message.chars().any(char::is_control))
-            .ok_or_else(|| invalid("malformed unpack receipt"))?;
-        let line =
-            packet(&response, &mut position)?.ok_or_else(|| invalid("missing ref receipt"))?;
-        let line = std::str::from_utf8(line)
-            .map_err(|_| invalid("non-UTF8 ref receipt"))?
-            .strip_suffix('\n')
-            .ok_or_else(|| invalid("unterminated ref receipt"))?;
-        let rejected = if line == format!("ok {name}") {
-            if unpack != "ok" {
-                return Err(invalid("contradictory unpack and ref receipt"));
-            }
-            None
-        } else if let Some(reason) = line.strip_prefix(&format!("ng {name} ")) {
-            if reason.is_empty() || reason.chars().any(char::is_control) {
-                return Err(invalid("malformed negative ref receipt"));
-            }
-            Some(if unpack == "ok" {
-                reason.into()
-            } else {
-                format!("unpack {unpack}; {reason}")
-            })
-        } else {
-            return Err(invalid("unexpected publication receipt"));
-        };
-        if packet(&response, &mut position)?.is_some() || position != response.len() {
-            return Err(invalid("trailing publication receipt"));
-        }
-        Ok(rejected)
-    })()
-    .map_err(|error| (Box::new(error), false))?;
+    let parsed = receive_status(&response, name).map_err(|error| (Box::new(error), false))?;
     if let Some(reason) = parsed {
         let reason = tool.config.authentication.as_ref().map_or_else(
             || reason.clone(),
@@ -589,9 +590,81 @@ pub(crate) fn push(
     Ok(())
 }
 
+fn receive_status(response: &[u8], name: &str) -> Result<Option<String>> {
+    let mut position = 0;
+    let unpack =
+        packet(response, &mut position)?.ok_or_else(|| invalid("missing unpack receipt"))?;
+    let unpack = std::str::from_utf8(unpack)
+        .map_err(|_| invalid("non-UTF8 unpack receipt"))?
+        .strip_suffix('\n')
+        .ok_or_else(|| invalid("unterminated unpack receipt"))?;
+    let unpack = unpack
+        .strip_prefix("unpack ")
+        .filter(|message| !message.is_empty() && !message.chars().any(char::is_control))
+        .ok_or_else(|| invalid("malformed unpack receipt"))?;
+    let line = packet(response, &mut position)?.ok_or_else(|| invalid("missing ref receipt"))?;
+    let line = std::str::from_utf8(line)
+        .map_err(|_| invalid("non-UTF8 ref receipt"))?
+        .strip_suffix('\n')
+        .ok_or_else(|| invalid("unterminated ref receipt"))?;
+    let rejected = if line == format!("ok {name}") {
+        if unpack != "ok" {
+            return Err(invalid("contradictory unpack and ref receipt"));
+        }
+        None
+    } else if let Some(reason) = line.strip_prefix(&format!("ng {name} ")) {
+        if reason.is_empty() || reason.chars().any(char::is_control) {
+            return Err(invalid("malformed negative ref receipt"));
+        }
+        Some(if unpack == "ok" {
+            reason.into()
+        } else {
+            format!("unpack {unpack}; {reason}")
+        })
+    } else {
+        return Err(invalid("unexpected publication receipt"));
+    };
+    if packet(response, &mut position)?.is_some() {
+        return Err(invalid("trailing publication receipt"));
+    }
+    // GitHub's Smart HTTP service adds one outer transport flush after the
+    // report-status flush. Recognize only that exact framing suffix; further
+    // packets, duplicate framing flushes and arbitrary bytes remain uncertain.
+    if position != response.len() && response.get(position..) != Some(b"0000") {
+        return Err(invalid("trailing publication receipt"));
+    }
+    Ok(rejected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn github_report_status_terminal_transport_flush_is_bounded_and_strict() {
+        // Exact response body from an authorized expected-absent GitHub push,
+        // captured without request headers or authentication material.
+        let github = b"000eunpack ok\n0022ok refs/heads/receipt-capture\n00000000";
+        assert_eq!(
+            receive_status(github, "refs/heads/receipt-capture").expect("GitHub report-status"),
+            None
+        );
+        let standard = &github[..github.len() - 4];
+        assert_eq!(
+            receive_status(standard, "refs/heads/receipt-capture").expect("standard report-status"),
+            None
+        );
+        assert!(receive_status(github, "refs/heads/other").is_err());
+        for suffix in [b"0000".as_slice(), b"0005x", b"0001", b"garbage", b"000"] {
+            let mut malformed = github.to_vec();
+            malformed.extend_from_slice(suffix);
+            assert!(receive_status(&malformed, "refs/heads/receipt-capture").is_err());
+        }
+        let mut extra_status = standard[..standard.len() - 4].to_vec();
+        append_packet(&mut extra_status, b"ok refs/heads/unrequested\n").expect("extra status");
+        extra_status.extend_from_slice(b"00000000");
+        assert!(receive_status(&extra_status, "refs/heads/receipt-capture").is_err());
+    }
+
     #[test]
     fn malformed_packets_and_unknown_object_formats_are_refused() {
         for bytes in [b"zzzz".as_slice(), b"0001", b"ffffx", b"0007a", b"0003"] {

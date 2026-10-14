@@ -231,6 +231,37 @@ pub enum EnvironmentPolicy {
     Clear,
 }
 
+/// Explicit bounded interrupt handoff for a cooperating command which cleans
+/// its own detached tools. The runtime still performs hard group cleanup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct CooperativeInterrupt(u64);
+
+impl CooperativeInterrupt {
+    pub fn from_millis(milliseconds: u64) -> Result<Self, RuntimeError> {
+        if !(1..=5000).contains(&milliseconds) {
+            return Err(RuntimeError::Invalid(
+                "cooperative interrupt grace must be between 1 and 5000 milliseconds".into(),
+            ));
+        }
+        Ok(Self(milliseconds))
+    }
+    pub fn grace(self) -> Duration {
+        Duration::from_millis(self.0)
+    }
+}
+impl TryFrom<u64> for CooperativeInterrupt {
+    type Error = RuntimeError;
+    fn try_from(milliseconds: u64) -> Result<Self, Self::Error> {
+        Self::from_millis(milliseconds)
+    }
+}
+impl From<CooperativeInterrupt> for u64 {
+    fn from(value: CooperativeInterrupt) -> Self {
+        value.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunRequest {
     pub workspace: WorkspaceBinding,
@@ -242,6 +273,7 @@ pub struct RunRequest {
     pub environment_binding: Option<ObjectId>,
     pub resources: ResourceRequest,
     pub timeout_ms: u64,
+    pub cooperative_interrupt: Option<CooperativeInterrupt>,
 }
 
 /// Durable/returned command metadata deliberately excludes overlay values.
@@ -255,6 +287,8 @@ pub struct JobRequestSummary {
     pub environment_binding: Option<ObjectId>,
     pub resources: ResourceRequest,
     pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooperative_interrupt: Option<CooperativeInterrupt>,
 }
 impl From<&RunRequest> for JobRequestSummary {
     fn from(request: &RunRequest) -> Self {
@@ -266,6 +300,7 @@ impl From<&RunRequest> for JobRequestSummary {
             environment_binding: request.environment_binding,
             resources: request.resources.clone(),
             timeout_ms: request.timeout_ms,
+            cooperative_interrupt: request.cooperative_interrupt,
         }
     }
 }
@@ -279,6 +314,7 @@ impl RunRequest {
             environment_binding: None,
             resources: ResourceRequest::default(),
             timeout_ms: 300_000,
+            cooperative_interrupt: None,
         }
     }
     pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, RuntimeError> {

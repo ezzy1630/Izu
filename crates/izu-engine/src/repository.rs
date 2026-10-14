@@ -129,6 +129,7 @@ pub struct Repository {
 /// this protocol; callers must preserve originals and check source identity.
 pub struct WorkspaceGuard<'a> {
     repository: &'a Repository,
+    _retention: RetentionLease,
     _lock: File,
     _live: File,
     directory: Directory,
@@ -139,6 +140,7 @@ pub struct WorkspaceGuard<'a> {
 /// It deliberately does not hold the metadata/capture lock, so a managed child
 /// may checkpoint or commit its own source. Restore/close wait or fail busy.
 pub struct WorkspaceWriterLease {
+    _retention: RetentionLease,
     _lock: File,
     state: WorkspaceState,
     intent: WriterIntent,
@@ -486,6 +488,7 @@ impl Repository {
         final_root: &Path,
         cancel: &CancellationToken,
     ) -> Result<RestoreReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let staging = canonical_root(staging_root)?;
         if staging != self.root {
             return Err(EngineError::InvalidInput(
@@ -506,6 +509,7 @@ impl Repository {
         final_root: &Path,
         cancel: &CancellationToken,
     ) -> Result<RestoreReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let metadata = staging
             .open_dir(OsStr::new(".izu"))
             .map_err(|error| io(&self.metadata, error))?;
@@ -628,6 +632,7 @@ impl Repository {
         };
         repository.prepare_workspace_locks(selected)?;
         let cancel = CancellationToken::new();
+        let _retention = repository.retention_lease(&cancel)?;
         let empty = repository.put_tree(
             &Tree {
                 entries: BTreeMap::new(),
@@ -662,6 +667,7 @@ impl Repository {
             )]),
         };
         let view = RepositoryView {
+            metadata_version: Some(MetadataVersion::V2),
             changes: BTreeMap::from([(change, ChangeState::resolved(revision))]),
             refs: BTreeMap::from([(RefName::new("main")?, revision)]),
             workspaces: BTreeMap::from([(selected, workspace)]),
@@ -703,6 +709,7 @@ impl Repository {
             ));
         };
         let store = Store::open(&metadata, &options.store)?;
+        let _retention = store.retain(&CancellationToken::new())?;
         let head = store
             .current_head(&CancellationToken::new())?
             .ok_or(EngineError::Uninitialized)?;
@@ -764,6 +771,106 @@ impl Repository {
         }
     }
 
+    /// Keeps prepared identities and multi-step adapter traversals available.
+    /// Hold through publication or explicit abandonment, including caller gaps.
+    pub fn retention_lease(&self, cancel: &CancellationToken) -> Result<RetentionLease> {
+        source::check(cancel)?;
+        self.store.retain(cancel).map_err(|error| match error {
+            izu_store::StoreError::Model(izu_model::ModelError::Cancelled) => {
+                EngineError::Cancelled
+            }
+            error => EngineError::Store(error),
+        })
+    }
+
+    pub fn plan_reclamation(
+        &self,
+        selected: &[ObjectId],
+        cancel: &CancellationToken,
+    ) -> Result<ReclamationPlan> {
+        let exclusive = self.store.exclusive_reclamation(cancel)?;
+        self.check_reclamation_intents(cancel)?;
+        Ok(exclusive.plan_selected(selected, cancel)?)
+    }
+
+    pub fn reclaim_selected(
+        &self,
+        selected: &[ObjectId],
+        cancel: &CancellationToken,
+    ) -> Result<ReclaimOutcome> {
+        let exclusive = self.store.exclusive_reclamation(cancel)?;
+        self.check_reclamation_intents(cancel)?;
+        Ok(exclusive.reclaim_selected(selected, cancel)?)
+    }
+
+    // Called only while the store's exclusive reclamation guard excludes
+    // lease creation. A crashed intent remains a root reservation until explicit
+    // stopped acknowledgement; kernel-lock absence is not discard consent.
+    fn check_reclamation_intents(&self, cancel: &CancellationToken) -> Result<()> {
+        let root = self.store.root_directory();
+        let locks = root
+            .open_dir(OsStr::new("workspace-locks"))
+            .map_err(|error| io(&self.metadata, error))?;
+        let mut visited = 0_u64;
+        for entry in locks.entries().map_err(|error| io(&self.metadata, error))? {
+            source::check(cancel)?;
+            visited = visited.checked_add(1).ok_or(EngineError::Limit {
+                resource: "workspace retention entries",
+                limit: self.options.store.max_scan_objects,
+            })?;
+            if visited > self.options.store.max_scan_objects {
+                return Err(EngineError::Limit {
+                    resource: "workspace retention entries",
+                    limit: self.options.store.max_scan_objects,
+                });
+            }
+            let entry = entry.map_err(|error| io(&self.metadata, error))?;
+            let path = self.metadata.join("workspace-locks").join(&entry.name);
+            let blocked = |reason| EngineError::ReclamationBlocked {
+                entry: path.clone(),
+                reason,
+            };
+            if entry.kind != izu_platform::EntryKind::File {
+                return Err(blocked("unrecognized retention entry kind"));
+            }
+            let name = entry
+                .name
+                .to_str()
+                .ok_or_else(|| blocked("unrecognized retention entry name"))?;
+            if let Some(id) = name
+                .strip_prefix("live-")
+                .and_then(|name| name.strip_suffix(".intent"))
+            {
+                let workspace: WorkspaceId = id
+                    .parse()
+                    .map_err(|_| blocked("invalid writer intent identity"))?;
+                read_intent(&locks, &entry.name, workspace)
+                    .map_err(|_| blocked("corrupt or unreadable writer intent"))?
+                    .ok_or_else(|| blocked("writer intent changed while checking"))?;
+                return Err(blocked(
+                    "unresolved writer intent requires explicit stopped acknowledgement",
+                ));
+            }
+            let lock_id = name
+                .strip_suffix(".lock")
+                .and_then(|name| name.strip_prefix("live-").or(Some(name)));
+            if lock_id
+                .and_then(|id| id.parse::<WorkspaceId>().ok())
+                .is_none()
+            {
+                return Err(blocked("unrecognized retention entry"));
+            }
+            locks
+                .open_existing_lock(&entry.name)
+                .map_err(|_| blocked("invalid workspace retention lock"))?;
+        }
+        let current = root
+            .open_dir(OsStr::new("workspace-locks"))
+            .map_err(|error| io(&self.metadata, error))?;
+        same_directory(&locks, &current, &self.metadata.join("workspace-locks"))?;
+        Ok(())
+    }
+
     pub fn root_path(&self) -> &Path {
         &self.root
     }
@@ -783,6 +890,7 @@ impl Repository {
         expected: WorkspaceExpectation,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceGuard<'_>> {
+        let _retention = self.retention_lease(cancel)?;
         let live = self.live_lock(id, cancel)?;
         let lock = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
@@ -793,6 +901,7 @@ impl Repository {
         let directory = Directory::open(root).map_err(|error| io(root, error))?;
         Ok(WorkspaceGuard {
             repository: self,
+            _retention,
             _lock: lock,
             _live: live,
             directory,
@@ -805,6 +914,7 @@ impl Repository {
         id: WorkspaceId,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceWriterLease> {
+        let _retention = self.retention_lease(cancel)?;
         let lock = self.live_lock(id, cancel)?;
         let _metadata = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
@@ -838,6 +948,7 @@ impl Repository {
             .sync()
             .map_err(|error| io(&self.metadata, error))?;
         Ok(WorkspaceWriterLease {
+            _retention,
             _lock: lock,
             state,
             intent,
@@ -854,6 +965,7 @@ impl Repository {
         expected: WorkspaceExpectation,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceWriterLease> {
+        let _retention = self.retention_lease(cancel)?;
         if self.workspace(id, cancel)?.expected != expected {
             return Err(EngineError::StaleWorkspace { workspace: id });
         }
@@ -870,6 +982,7 @@ impl Repository {
         id: WorkspaceId,
         cancel: &CancellationToken,
     ) -> Result<Option<WriterIntent>> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         let root = self
             .store
@@ -893,6 +1006,7 @@ impl Repository {
         expected: &WriterToken,
         cancel: &CancellationToken,
     ) -> Result<OperationId> {
+        let _retention = self.retention_lease(cancel)?;
         self.acknowledge_writer_stopped_with_note(
             id,
             expected,
@@ -910,6 +1024,7 @@ impl Repository {
         note: String,
         cancel: &CancellationToken,
     ) -> Result<OperationId> {
+        let _retention = self.retention_lease(cancel)?;
         if note.trim().is_empty() {
             return Err(EngineError::InvalidInput(
                 "stopped writer acknowledgement requires an assertion".into(),
@@ -963,6 +1078,7 @@ impl Repository {
     }
 
     pub fn current_operation(&self, cancel: &CancellationToken) -> Result<OperationId> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         self.store
             .current_head(cancel)?
@@ -970,16 +1086,19 @@ impl Repository {
     }
 
     pub fn operation(&self, id: OperationId, cancel: &CancellationToken) -> Result<Operation> {
+        let _retention = self.retention_lease(cancel)?;
         self.decode(id.object_id(), ObjectKind::Operation, cancel)
     }
 
     pub fn view(&self, cancel: &CancellationToken) -> Result<RepositoryView> {
+        let _retention = self.retention_lease(cancel)?;
         Ok(self
             .operation(self.current_operation(cancel)?, cancel)?
             .view)
     }
 
     pub fn workspace(&self, id: WorkspaceId, cancel: &CancellationToken) -> Result<WorkspaceState> {
+        let _retention = self.retention_lease(cancel)?;
         let mut view = self.view(cancel)?;
         let record = view
             .workspaces
@@ -994,6 +1113,7 @@ impl Repository {
     }
 
     pub fn revision(&self, id: RevisionId, cancel: &CancellationToken) -> Result<Revision> {
+        let _retention = self.retention_lease(cancel)?;
         let revision: Revision = self.decode(id.object_id(), ObjectKind::Revision, cancel)?;
         if matches!(revision.origin, Some(izu_model::RevisionOrigin::Bootstrap))
             && !self.tree(revision.tree, cancel)?.entries.is_empty()
@@ -1006,6 +1126,7 @@ impl Repository {
     }
 
     pub fn tree(&self, id: TreeId, cancel: &CancellationToken) -> Result<Tree> {
+        let _retention = self.retention_lease(cancel)?;
         let tree: Tree = self.decode(id.object_id(), ObjectKind::Tree, cancel)?;
         source::validate_tree(&tree)?;
         Ok(tree)
@@ -1016,6 +1137,7 @@ impl Repository {
         id: CandidateId,
         cancel: &CancellationToken,
     ) -> Result<IntegrationCandidate> {
+        let _retention = self.retention_lease(cancel)?;
         if !self.view(cancel)?.candidates.contains(&id) {
             return Err(EngineError::UnknownCandidate(id.to_string()));
         }
@@ -1023,6 +1145,7 @@ impl Repository {
     }
 
     pub fn evidence(&self, id: EvidenceId, cancel: &CancellationToken) -> Result<CheckEvidence> {
+        let _retention = self.retention_lease(cancel)?;
         self.decode(id.object_id(), ObjectKind::Evidence, cancel)
     }
 
@@ -1032,11 +1155,13 @@ impl Repository {
         kind: ObjectKind,
         cancel: &CancellationToken,
     ) -> Result<Vec<u8>> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         Ok(self.store.get(id, kind, cancel)?)
     }
 
     pub fn blob(&self, id: ObjectId, cancel: &CancellationToken) -> Result<Vec<u8>> {
+        let _retention = self.retention_lease(cancel)?;
         self.object(id, ObjectKind::Blob, cancel)
     }
     pub fn read_blob<W: Write>(
@@ -1045,6 +1170,7 @@ impl Repository {
         writer: &mut W,
         cancel: &CancellationToken,
     ) -> Result<u64> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         Ok(self.store.read_blob(id, writer, cancel)?)
     }
@@ -1054,10 +1180,12 @@ impl Repository {
         length: u64,
         cancel: &CancellationToken,
     ) -> Result<ObjectId> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         Ok(self.store.put_blob(reader, length, cancel)?)
     }
     pub fn put_tree(&self, tree: &Tree, cancel: &CancellationToken) -> Result<TreeId> {
+        let _retention = self.retention_lease(cancel)?;
         source::validate_tree(tree)?;
         let bytes = encode_metadata(tree, self.limits())?;
         Ok(TreeId::from_object(self.store.put(
@@ -1071,6 +1199,7 @@ impl Repository {
         revision: &Revision,
         cancel: &CancellationToken,
     ) -> Result<RevisionId> {
+        let _retention = self.retention_lease(cancel)?;
         let tree = self.tree(revision.tree, cancel)?;
         if matches!(revision.origin, Some(izu_model::RevisionOrigin::Bootstrap))
             && !tree.entries.is_empty()
@@ -1098,6 +1227,7 @@ impl Repository {
         bytes: &[u8],
         cancel: &CancellationToken,
     ) -> Result<ObjectId> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         match kind {
             ObjectKind::Blob => {}
@@ -1315,6 +1445,7 @@ impl Repository {
         selection: Selection,
         cancel: &CancellationToken,
     ) -> Result<CapturedTree> {
+        let _retention = self.retention_lease(cancel)?;
         let _lock = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
         let (source, tree, stats) = self.capture_state(&state, &selection, false, cancel)?;
@@ -1331,6 +1462,7 @@ impl Repository {
     /// Includes ignored entries for recovery/owned-environment checks. Native
     /// metadata and recovery originals remain protected from traversal.
     pub fn capture_all(&self, id: WorkspaceId, cancel: &CancellationToken) -> Result<CapturedTree> {
+        let _retention = self.retention_lease(cancel)?;
         let _lock = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
         let (source, tree, stats) = self.capture_state(&state, &Selection::All, true, cancel)?;
@@ -1353,6 +1485,7 @@ impl Repository {
         selection: Selection,
         cancel: &CancellationToken,
     ) -> Result<CapturedTree> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         match same_directory(
             &lease.repository_directory,
@@ -1393,6 +1526,7 @@ impl Repository {
         selection: Selection,
         cancel: &CancellationToken,
     ) -> Result<CheckpointReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let _lock = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
         if state.expected != expected {
@@ -1437,6 +1571,7 @@ impl Repository {
         author: Identity,
         cancel: &CancellationToken,
     ) -> Result<CommitReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         self.commit_internal(id, expected, selection, description, author, None, cancel)
     }
 
@@ -1451,6 +1586,7 @@ impl Repository {
         reference: RefExpectation,
         cancel: &CancellationToken,
     ) -> Result<CommitReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         if reference
             .expected
             .is_some_and(|revision| revision != expected.head)
@@ -1549,6 +1685,7 @@ impl Repository {
         author: Identity,
         cancel: &CancellationToken,
     ) -> Result<CommitReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let _lock = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
         if state.expected != expected {
@@ -1609,6 +1746,7 @@ impl Repository {
     }
 
     pub fn status(&self, id: WorkspaceId, cancel: &CancellationToken) -> Result<Status> {
+        let _retention = self.retention_lease(cancel)?;
         let _lock = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
         let baseline = self.tree(self.revision(state.record.head, cancel)?.tree, cancel)?;
@@ -1633,6 +1771,7 @@ impl Repository {
         after: RevisionId,
         cancel: &CancellationToken,
     ) -> Result<Vec<PathChange>> {
+        let _retention = self.retention_lease(cancel)?;
         tree_diff(
             &self.tree(self.revision(before, cancel)?.tree, cancel)?,
             &self.tree(self.revision(after, cancel)?.tree, cancel)?,
@@ -1644,6 +1783,7 @@ impl Repository {
         id: WorkspaceId,
         cancel: &CancellationToken,
     ) -> Result<Vec<PathChange>> {
+        let _retention = self.retention_lease(cancel)?;
         Ok(self.status(id, cancel)?.entries)
     }
 
@@ -1653,6 +1793,7 @@ impl Repository {
         limit: usize,
         cancel: &CancellationToken,
     ) -> Result<Vec<RevisionSummary>> {
+        let _retention = self.retention_lease(cancel)?;
         self.history_limit(limit)?;
         let mut seen = BTreeSet::new();
         let mut queue = VecDeque::from([start]);
@@ -1692,6 +1833,7 @@ impl Repository {
         limit: usize,
         cancel: &CancellationToken,
     ) -> Result<Vec<OperationSummary>> {
+        let _retention = self.retention_lease(cancel)?;
         self.history_limit(limit)?;
         let mut current = Some(self.current_operation(cancel)?);
         let mut seen = BTreeSet::new();
@@ -1850,10 +1992,21 @@ impl Repository {
         selector: &str,
         cancel: &CancellationToken,
     ) -> Result<RevisionId> {
+        let _retention = self.retention_lease(cancel)?;
         if selector == "@" {
             return Ok(self.workspace(self.selected, cancel)?.record.head);
         }
         let view = self.view(cancel)?;
+        if let Some(tag) = selector.strip_prefix("tag:") {
+            let name = RefName::new(tag)?;
+            return match view.tags.get(&name).map(|tag| tag.target) {
+                Some(TagTarget::Revision { revision }) => Ok(revision),
+                Some(_) => Err(EngineError::InvalidInput(
+                    "selected tag does not target a revision".into(),
+                )),
+                None => Err(EngineError::UnknownRevision(selector.into())),
+            };
+        }
         if let Some(change) = selector.strip_prefix("change:") {
             let id: ChangeId = change.parse()?;
             let state = view
@@ -1920,6 +2073,7 @@ impl Repository {
         new: Option<RevisionId>,
         cancel: &CancellationToken,
     ) -> Result<OperationId> {
+        let _retention = self.retention_lease(cancel)?;
         self.import_revisions(
             &[],
             &[RefUpdate {
@@ -1937,6 +2091,18 @@ impl Repository {
         refs: &[RefUpdate],
         cancel: &CancellationToken,
     ) -> Result<OperationId> {
+        self.import_history(revisions, refs, &[], cancel)
+    }
+
+    /// Revisions, branch leases and tag leases publish in one native operation.
+    pub fn import_history(
+        &self,
+        revisions: &[RevisionId],
+        refs: &[RefUpdate],
+        tags: &[TagUpdate],
+        cancel: &CancellationToken,
+    ) -> Result<OperationId> {
+        let _retention = self.retention_lease(cancel)?;
         if revisions.len() > self.options.source_limits.max_history {
             return Err(EngineError::Limit {
                 resource: "import revisions",
@@ -1963,12 +2129,41 @@ impl Repository {
                 self.verify_revision_closure(id, cancel)?;
             }
         }
+        if tags.len() > self.limits().max_refs {
+            return Err(EngineError::Limit {
+                resource: "tag updates",
+                limit: self.limits().max_refs as u64,
+            });
+        }
+        let mut tag_names = BTreeSet::new();
+        for update in tags {
+            if !tag_names.insert(update.name.clone()) {
+                return Err(EngineError::InvalidInput("duplicate tag update".into()));
+            }
+            if let Some(tag) = &update.new {
+                tag.validate(self.limits())?;
+                self.verify_tag_closure(tag, cancel)?;
+            }
+        }
         self.mutate(
             "Import revisions and update references".into(),
             cancel,
             |view| {
                 for update in refs {
                     check_ref(view, &update.name, update.expected)?;
+                }
+                if !tags.is_empty() && view.metadata_version != Some(MetadataVersion::V2) {
+                    return Err(EngineError::MetadataMigrationRequired {
+                        current: 1,
+                        required: 2,
+                    });
+                }
+                for update in tags {
+                    if view.tags.get(&update.name) != update.expected.as_ref() {
+                        return Err(EngineError::StaleTag {
+                            name: update.name.clone(),
+                        });
+                    }
                 }
                 for (id, change) in imported {
                     match view.changes.get_mut(&change) {
@@ -1990,9 +2185,52 @@ impl Repository {
                         }
                     }
                 }
+                for update in tags {
+                    if let Some(tag) = &update.new {
+                        view.tags.insert(update.name.clone(), tag.clone());
+                    } else {
+                        view.tags.remove(&update.name);
+                    }
+                }
                 Ok(())
             },
         )
+    }
+
+    fn verify_tag_closure(&self, tag: &NativeTag, cancel: &CancellationToken) -> Result<()> {
+        use izu_model::ReferencedObjects;
+        let mut references = Vec::new();
+        tag.visit_references(&mut |reference| references.push(reference));
+        self.verify_graph(references, cancel)?;
+        Ok(())
+    }
+
+    pub fn update_tag(&self, update: TagUpdate, cancel: &CancellationToken) -> Result<OperationId> {
+        self.import_history(&[], &[], &[update], cancel)
+    }
+
+    /// Explicit migration appends one operation; no old object is re-encoded.
+    /// The exact HEAD lease is checked under the same publication lock.
+    pub fn migrate_metadata_v2(
+        &self,
+        expected: OperationId,
+        cancel: &CancellationToken,
+    ) -> Result<OperationId> {
+        let _retention = self.retention_lease(cancel)?;
+        let transaction = self.store.begin(HeadExpectation::At(expected), cancel)?;
+        let mut view = self.operation(expected, cancel)?.view;
+        if view.metadata_version == Some(MetadataVersion::V2) {
+            return Ok(expected);
+        }
+        view.metadata_version = Some(MetadataVersion::V2);
+        let operation = Operation {
+            parent: Some(expected),
+            view,
+            description: "Migrate native metadata to version two".into(),
+            created_at_unix_ms: timestamp()?,
+        };
+        let id = self.write_operation(&operation, cancel)?;
+        publish(transaction.publish(id, cancel)?)
     }
 
     pub fn fork_workspace(
@@ -2002,6 +2240,7 @@ impl Repository {
         from: RevisionId,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceState> {
+        let _retention = self.retention_lease(cancel)?;
         let requested = path.as_ref();
         let (root, directory) = match std::fs::symlink_metadata(requested) {
             Ok(metadata) if metadata.is_dir() => {
@@ -2021,6 +2260,9 @@ impl Repository {
                 })?;
                 let parent =
                     Directory::open(&parent_path).map_err(|error| io(&parent_path, error))?;
+                parent
+                    .require_persistent_filesystem()
+                    .map_err(|error| io(requested, error))?;
                 let directory = parent
                     .create_dir(filename)
                     .map_err(|error| io(requested, error))?;
@@ -2041,6 +2283,9 @@ impl Repository {
         from: RevisionId,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceForkReceipt> {
+        directory
+            .require_persistent_filesystem()
+            .map_err(|error| io(&root, error))?;
         if name.trim().is_empty() {
             return Err(EngineError::InvalidInput("workspace name is empty".into()));
         }
@@ -2130,6 +2375,7 @@ impl Repository {
         from: RevisionId,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceState> {
+        let _retention = self.retention_lease(cancel)?;
         self.fork_managed_workspace_receipt(name, from, cancel)
             .map(|receipt| receipt.workspace)
     }
@@ -2142,6 +2388,7 @@ impl Repository {
         from: RevisionId,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceForkReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         source::check(cancel)?;
         if self
             .view(cancel)?
@@ -2184,6 +2431,7 @@ impl Repository {
         selection: Selection,
         cancel: &CancellationToken,
     ) -> Result<RestoreReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let revision = self.revision(source_revision, cancel)?;
         let target = self.tree(revision.tree, cancel)?;
         reject_conflicts(&target)?;
@@ -2208,6 +2456,7 @@ impl Repository {
         source_revision: RevisionId,
         cancel: &CancellationToken,
     ) -> Result<RestoreReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let revision = self.revision(source_revision, cancel)?;
         let target = self.tree(revision.tree, cancel)?;
         reject_conflicts(&target)?;
@@ -2238,6 +2487,7 @@ impl Repository {
         author: Identity,
         cancel: &CancellationToken,
     ) -> Result<RevertPreparation> {
+        let _retention = self.retention_lease(cancel)?;
         self.revert_internal(
             id,
             expected,
@@ -2263,6 +2513,7 @@ impl Repository {
         reference: RefExpectation,
         cancel: &CancellationToken,
     ) -> Result<RevertPreparation> {
+        let _retention = self.retention_lease(cancel)?;
         if reference
             .expected
             .is_some_and(|revision| revision != expected.head)
@@ -2401,6 +2652,7 @@ impl Repository {
         author: Identity,
         cancel: &CancellationToken,
     ) -> Result<RevisionSummary> {
+        let _retention = self.retention_lease(cancel)?;
         if resolutions.is_empty() {
             return Err(EngineError::InvalidInput(
                 "no conflict resolutions supplied".into(),
@@ -2445,6 +2697,7 @@ impl Repository {
         selection: Selection,
         cancel: &CancellationToken,
     ) -> Result<RestoreReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let undoing = self.operation(*operation, cancel)?;
         let parent = undoing.parent.ok_or_else(|| {
             EngineError::InvalidInput("initialization has no earlier workspace source".into())
@@ -2698,6 +2951,7 @@ impl Repository {
         expected: WorkspaceExpectation,
         cancel: &CancellationToken,
     ) -> Result<OperationId> {
+        let _retention = self.retention_lease(cancel)?;
         let _live = self.live_lock(id, cancel)?;
         let _lock = self.workspace_lock(id, cancel)?;
         let state = self.workspace(id, cancel)?;
@@ -2758,6 +3012,7 @@ impl Repository {
     }
 
     pub fn object_info(&self, id: ObjectId, cancel: &CancellationToken) -> Result<ObjectInfo> {
+        let _retention = self.retention_lease(cancel)?;
         let info = self.store.object_info(id, cancel)?;
         Ok(ObjectInfo {
             id: info.id,
@@ -2773,6 +3028,7 @@ impl Repository {
         writer: &mut dyn Write,
         cancel: &CancellationToken,
     ) -> Result<u64> {
+        let _retention = self.retention_lease(cancel)?;
         let mut writer = writer;
         Ok(self.store.read_object_to(id, kind, &mut writer, cancel)?)
     }
@@ -2785,6 +3041,7 @@ impl Repository {
         length: u64,
         cancel: &CancellationToken,
     ) -> Result<ObjectId> {
+        let _retention = self.retention_lease(cancel)?;
         let mut reader = reader;
         let id = self
             .store
@@ -2894,6 +3151,7 @@ impl Repository {
     }
 
     pub fn verify(&self, cancel: &CancellationToken) -> Result<VerificationReport> {
+        let _retention = self.retention_lease(cancel)?;
         let root = self.current_operation(cancel)?;
         self.store.verify(cancel)?;
         let report = self.verify_graph(
@@ -2963,6 +3221,7 @@ impl Repository {
         author: Identity,
         cancel: &CancellationToken,
     ) -> Result<MergePreparation> {
+        let _retention = self.retention_lease(cancel)?;
         check_ref(&self.view(cancel)?, &target, expected_target)?;
         let theirs = self.revision(source_revision, cancel)?;
         let theirs_tree = self.tree(theirs.tree, cancel)?;
@@ -3027,6 +3286,7 @@ impl Repository {
         author: Identity,
         cancel: &CancellationToken,
     ) -> Result<CandidateId> {
+        let _retention = self.retention_lease(cancel)?;
         Ok(self
             .prepare_candidate_internal(
                 target,
@@ -3134,6 +3394,7 @@ impl Repository {
         author: Identity,
         cancel: &CancellationToken,
     ) -> Result<MergePreparation> {
+        let _retention = self.retention_lease(cancel)?;
         if resolutions.is_empty() {
             return Err(EngineError::InvalidInput(
                 "conflict resolution is empty".into(),
@@ -3184,6 +3445,7 @@ impl Repository {
         name: &str,
         cancel: &CancellationToken,
     ) -> Result<CheckAttemptReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let candidate = self.candidate(id, cancel)?;
         reject_conflicts(&self.tree(candidate.result_tree, cancel)?)?;
         let spec = candidate
@@ -3264,6 +3526,7 @@ impl Repository {
         evidence: &CheckEvidence,
         cancel: &CancellationToken,
     ) -> Result<EvidenceId> {
+        let _retention = self.retention_lease(cancel)?;
         if matches!(evidence.outcome, CheckOutcome::Pending) {
             return Err(EngineError::InvalidInput(
                 "use start_check to publish a pending attempt".into(),
@@ -3344,6 +3607,7 @@ impl Repository {
     }
 
     pub fn land(&self, id: CandidateId, cancel: &CancellationToken) -> Result<LandReceipt> {
+        let _retention = self.retention_lease(cancel)?;
         let candidate = self.candidate(id, cancel)?;
         reject_conflicts(&self.tree(candidate.result_tree, cancel)?)?;
         if candidate.checks.is_empty() {
@@ -3414,6 +3678,7 @@ impl Repository {
         theirs: RevisionId,
         cancel: &CancellationToken,
     ) -> Result<Option<RevisionId>> {
+        let _retention = self.retention_lease(cancel)?;
         let mut graph = BTreeMap::new();
         let mut pending = VecDeque::from([ours, theirs]);
         let mut bytes = 0;

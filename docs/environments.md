@@ -84,8 +84,13 @@ their named entries are rechecked before materialization or starting-state proof
 
 Preparation uses a unique stage and holds a permanent advisory key lock plus an
 admission lock. Files and directories are synced before atomic no-replacement
-publication; the containing artifacts directory is synced before a durable
-receipt. A fresh import then reads the published artifact through the full reuse
+publication. The stage root alone remains `0700` for the rename because some macOS hosts
+require owner write permission on the renamed directory; payload directories,
+files, and metadata are already sealed. Under the same exclusive key lease,
+the pinned published root is sealed to `0555` and synced, then the containing
+artifacts directory is synced before a durable receipt. An interruption before
+the root seal leaves a visible `0700` artifact that reuse rejects; automatic
+reimport does not repair or trust it. A fresh import then reads the published artifact through the full reuse
 verifier under the same exclusive key lease, compares its complete summary
 (including manifest digest) with the originally prepared summary, and rechecks
 the borrowed artifact's locators before acknowledging success. A failure during
@@ -101,6 +106,47 @@ before creating their writable namespace. Successful sync on tmpfs does not
 establish persistence. Classification cannot prove persistent hardware beneath
 an otherwise ordinary filesystem.
 
+The native macOS rename permission refusal is separate from the historical
+host-shared identity investigation below. Moving the root seal after rename
+addresses that syscall requirement without changing any native identity check.
+
+### Identity failures and approved native-storage boundary
+
+The recorded Docker Desktop host-shared mount investigation reproduced a fresh
+import refusal: the manifest's creating descriptor and `READY` agreed on one
+device/inode pair, while the verification descriptor reported another. A later
+controlled challenge correlated that exact failed verification descriptor with
+the host-pinned manifest's changing bytes. This narrows the explanation, but
+does not establish uninterrupted identity from creation to reopen or identify
+the provider, kernel or application mechanism. Equal bytes cannot substitute for
+the native identity check. The retained publication stays refused; neither
+`READY` refresh nor automatic reimport repairs it.
+
+The first-release storage boundary, approved on 2026-10-13, is an explicitly
+selected guest-native persistent
+storage boundary for the entire owned repository, metadata, cache and managed
+writable workspaces. This preserves the current resolver and native format:
+`.izu/environments/v1` remains inside that repository, and every import, bind and
+materialization uses the existing shared API and unchanged identity guards.
+Transfer source through the engine's supported exchange path, then explicitly
+prepare/import dependencies on the target and create a fresh binding. Do not
+copy a ready native cache or treat an old native manifest digest as portable.
+The original repository, failed artifacts and unique work remain preserved.
+
+Docker Desktop host-shared prepared-cache import remains unsupported in this
+release; its historical identity failure stays open. The platform refuses known
+shared/network and layered filesystems before persistence acknowledgement.
+Passing a filesystem classification still does not qualify arbitrary mounts.
+A cache-only relocation would additionally require an explicit shared
+resolver contract for binding and runtime use; the current facade does not
+support it. Filesystem names alone cannot qualify an arbitrary mount. Proposed
+acceptance requires source/compiler/binary pins, actual mount and persistence
+observations, fresh create/reopen and same-byte-replacement checks, concurrent
+imports, crash/disk-full checks, private-view isolation, bound runtime checks,
+and the unchanged full platform gates on the exact selected storage. The
+recorded guest-native ext4 passes are supplemental evidence for their named
+targets. They do not replace canonical host-shared failures or close their cause.
+
 The cache root, artifacts directory and lock directory retain pinned descriptors.
 Their path locators must still identify those directories when acknowledging an
 operation. Publication also compares the staging name with its original pinned
@@ -110,6 +156,12 @@ after publication returns `PublicationIdentityUncertain`; it cannot produce a
 successful receipt for the replacement. Moved originals and unfamiliar entries
 are preserved. These observations do not make same-user namespace edits atomic
 with the following syscall.
+
+A refused atomic staging-directory rename preserves its original I/O error and
+reports the exact source and destination with best-effort device, inode, mode,
+owner and group observations from the pinned stage and parent descriptors.
+Those observations occur after refusal; they do not establish metadata or ACLs
+at the syscall instant, and unavailable metadata does not replace its cause.
 
 `CacheStatus` distinguishes missing, building/in-use, incomplete and verified
 ready state. A killed or cancelled build is retained under its staging name and

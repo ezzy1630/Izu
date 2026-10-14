@@ -600,11 +600,22 @@ fn head_absence_is_confirmed_without_relocking_guarded_readers() -> TestResult {
         matches!(observed, Err(StoreError::LockTimeout("head.lock"))),
         "absence must wait for the in-flight publication: {observed:?}"
     );
-    // Recovery's exclusive temporary lease already excludes HEAD replacement.
-    // Taking the head lock here would reverse publication's acquisition order.
-    assert_eq!(fixture.store.recover(&cancel)?.verified.head, None);
+    // The transaction retains preparations until publication or abandonment.
+    assert!(matches!(
+        fixture.store.recover(&cancel),
+        Err(StoreError::LockTimeout("temporary.lock"))
+    ));
     drop(publication);
+    assert_eq!(fixture.store.recover(&cancel)?.verified.head, None);
     assert_eq!(fixture.store.current_head(&cancel)?, None);
+    // Isolate the original inverse-lock-order invariant: recovery's exclusive
+    // temporary lease excludes HEAD replacement, so it must not take head.lock.
+    let head = fixture
+        .store
+        .root_directory()
+        .open_existing_lock(std::ffi::OsStr::new("head.lock"))?;
+    head.try_lock()?;
+    assert_eq!(fixture.store.recover(&cancel)?.verified.head, None);
     Ok(())
 }
 

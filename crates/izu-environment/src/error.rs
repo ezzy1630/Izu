@@ -1,5 +1,43 @@
 use std::path::PathBuf;
 
+/// Best-effort metadata from an already pinned publication directory after a
+/// rename refusal. Observations do not replace the original syscall error.
+#[derive(Debug)]
+pub enum DirectoryMetadataObservation {
+    Observed {
+        device: u64,
+        inode: u64,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    },
+    Unavailable {
+        kind: std::io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+}
+
+impl std::fmt::Display for DirectoryMetadataObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Observed {
+                device,
+                inode,
+                mode,
+                uid,
+                gid,
+            } => write!(
+                formatter,
+                "device={device}, inode={inode}, mode={mode:04o}, uid={uid}, gid={gid}"
+            ),
+            Self::Unavailable { kind, raw_os_error } => write!(
+                formatter,
+                "unavailable: kind={kind:?}, raw_os_error={raw_os_error:?}"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EnvironmentError {
     #[error("invalid environment recipe: {0}")]
@@ -15,6 +53,17 @@ pub enum EnvironmentError {
     #[error("environment filesystem error at {path}: {source}")]
     Io {
         path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "atomic no-replacement environment stage rename from {stage} to {destination} failed (pinned stage: {stage_metadata}; pinned parent: {parent_metadata}): {source}"
+    )]
+    StageRenameIo {
+        stage: PathBuf,
+        destination: PathBuf,
+        stage_metadata: DirectoryMetadataObservation,
+        parent_metadata: DirectoryMetadataObservation,
         #[source]
         source: std::io::Error,
     },

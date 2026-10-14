@@ -184,6 +184,81 @@ fn queued_cancellation_releases_claim_without_releasing_the_head_holder() -> Tes
 }
 
 #[test]
+fn cancellation_at_gate_or_native_wait_releases_only_the_request_leases() -> TestResult {
+    for blocked_at_gate in [true, false] {
+        let (directory, store) = fixture()?;
+        let (registered, registration) = mpsc::channel();
+        let waiting = Store::open(
+            &directory.path().canonicalize()?.join("store"),
+            &signal_registration(registered),
+        )?;
+        let queue = store
+            .root_directory()
+            .open_dir(OsStr::new("head-admission-v1"))?;
+        let held = if blocked_at_gate {
+            queue.open_existing_lock(OsStr::new("gate.lock"))?
+        } else {
+            store
+                .root_directory()
+                .open_existing_lock(OsStr::new("head.lock"))?
+        };
+        held.try_lock()?;
+        let cancel = CancellationToken::new();
+        std::thread::scope(|scope| -> TestResult {
+            let (started, start_wait) = mpsc::channel();
+            let (finished, finish_wait) = mpsc::channel();
+            let cancel = &cancel;
+            let request = scope.spawn(move || {
+                let _ = started.send(());
+                let result = waiting.begin(HeadExpectation::Any, cancel).map(drop);
+                let _ = finished.send(result);
+            });
+            start_wait.recv_timeout(Duration::from_secs(1))?;
+            if !blocked_at_gate {
+                registration.recv_timeout(Duration::from_secs(1))?;
+            }
+            let before_cancel = finish_wait.recv_timeout(Duration::from_millis(30));
+            cancel.cancel();
+            let result = finish_wait.recv_timeout(Duration::from_secs(1));
+            request.join().expect("cancelled gate/native request");
+            assert!(
+                matches!(before_cancel, Err(mpsc::RecvTimeoutError::Timeout)),
+                "request bypassed its held lock: {before_cancel:?}"
+            );
+            assert!(matches!(
+                result?,
+                Err(StoreError::Model(izu_model::ModelError::Cancelled))
+            ));
+            Ok(())
+        })?;
+        // The independent descriptor still owns exactly the lock we held.
+        let held_probe = if blocked_at_gate {
+            queue.open_existing_lock(OsStr::new("gate.lock"))?
+        } else {
+            store
+                .root_directory()
+                .open_existing_lock(OsStr::new("head.lock"))?
+        };
+        assert!(matches!(
+            held_probe.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(held_probe);
+        // Every claimant is free even if cancellation followed registration.
+        for entry in queue.entries()? {
+            let entry = entry?;
+            if entry.name != OsStr::new("gate.lock") {
+                let probe = queue.open_existing_lock(&entry.name)?;
+                probe.try_lock()?;
+            }
+        }
+        drop(held);
+        drop(store.begin(HeadExpectation::Any, &CancellationToken::new())?);
+    }
+    Ok(())
+}
+
+#[test]
 fn cancellation_or_hook_error_after_registration_leaves_no_claim() -> TestResult {
     for injected_error in [false, true] {
         let (directory, store) = fixture()?;

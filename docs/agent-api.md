@@ -250,3 +250,22 @@ cannot name arbitrary host secret environment variables. DER trust anchors are
 explicit byte arrays, limited to eight certificates of 64 KiB each. Neither
 credentials nor trust choices silently modify global Git configuration. Remote
 publication still requires the exact target lease and explicit divergence policy.
+
+
+Managed launch accepts optional `cooperative_interrupt_ms` from 1 to 5000 (CLI
+`--cooperative-interrupt-ms`). Omission retains immediate cleanup. Select it only
+for a cooperating adapter which interrupts and waits for its detached tools.
+Its budget applies to shutdown, without extending execution. The owning worker
+interrupts its still-owned command through a private control-pipe request; a
+validated exit receipt must precede normal cancellation finalization. The
+controller always performs hard group cleanup too. Missing or failed handoff
+retains source writer intent and reports ownership uncertainty rather than
+acknowledging a stopped workspace. No saved PID authorizes signals on reopen.
+
+
+The first cooperative launch durably adds the versioned top-level registry
+feature `cooperative_interrupt_v1`. Older runtime readers reject that extension;
+they cannot silently erase a new job's shutdown policy during shared registry
+updates. Immediate-only registries retain their original encoding. The feature
+remains after jobs finish; use a compatible runtime for that registry. Native
+history and bundle format versions are independent of this runtime extension.

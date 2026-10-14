@@ -130,6 +130,7 @@ fn operation_closure_contains_every_view_edge_without_filesystem_side_effects() 
             candidate,
             BTreeSet::from([EvidenceId::from_object(object(11))]),
         )]),
+        ..RepositoryView::default()
     };
     let operation = Operation {
         parent: Some(OperationId::from_object(object(1))),

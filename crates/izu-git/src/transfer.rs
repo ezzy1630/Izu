@@ -5,10 +5,11 @@ use crate::{
     Error, GitInventory, GitObjectId, GitSource, GitToolConfig, Result, native_error,
     validate_git_ref,
 };
-use izu_engine::{RefUpdate, Repository, RepositoryOptions, Selection};
+use izu_engine::{RefUpdate, Repository, RepositoryOptions, Selection, TagUpdate};
 use izu_model::{
-    CancellationToken, ChangeId, FileMode, Identity, OperationId, RefName, RepoPath, Revision,
-    RevisionId, RevisionOrigin, SymlinkTarget, Tree, TreeEntry, TreeId,
+    CancellationToken, ChangeId, FileMode, GitTagAnnotation, GitTagOrigin, Identity, NativeTag,
+    OperationId, RefName, RepoPath, Revision, RevisionId, RevisionOrigin, SymlinkTarget, TagTarget,
+    Tree, TreeEntry, TreeId,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -23,6 +24,18 @@ pub struct ImportOptions {
     /// Empty means import all ordinary source branches into identically named
     /// new native refs. Existing native refs require an explicit expected ID.
     pub refs: Vec<RefImport>,
+    pub tags: Vec<TagImport>,
+}
+#[derive(Clone, Debug)]
+pub struct TagImport {
+    pub git_ref: String,
+    pub native_tag: RefName,
+    pub expected: Option<NativeTag>,
+}
+#[derive(Clone, Debug)]
+pub struct TagExport {
+    pub native_tag: RefName,
+    pub git_ref: String,
 }
 #[derive(Clone, Debug)]
 pub struct RefImport {
@@ -34,6 +47,7 @@ pub struct RefImport {
 pub struct ExportOptions {
     /// Empty means export all native refs under refs/heads/.
     pub refs: Vec<RefExport>,
+    pub tags: Vec<TagExport>,
     pub committer: Option<GitSignature>,
 }
 #[derive(Clone, Debug)]
@@ -137,7 +151,7 @@ impl GitAdapter {
         options: &ImportOptions,
         cancel: &CancellationToken,
     ) -> Result<Stage> {
-        let selected = if options.refs.is_empty() {
+        let selected = if options.refs.is_empty() && options.tags.is_empty() {
             None
         } else {
             Some(
@@ -145,6 +159,12 @@ impl GitAdapter {
                     .refs
                     .iter()
                     .map(|selection| selection.git_ref.clone())
+                    .chain(
+                        options
+                            .tags
+                            .iter()
+                            .map(|selection| selection.git_ref.clone()),
+                    )
                     .collect::<BTreeSet<_>>(),
             )
         };
@@ -168,10 +188,13 @@ impl GitAdapter {
         extra_refs: &[RefUpdate],
         cancel: &CancellationToken,
     ) -> Result<ImportReport> {
+        let _retention = repository
+            .retention_lease(cancel)
+            .map_err(|error| native_error("retain native preparation", error))?;
         if !stage.inventory.unsupported.is_empty() {
             return Err(Error::Unsupported(stage.inventory.unsupported));
         }
-        let selections = if options.refs.is_empty() {
+        let selections = if options.refs.is_empty() && options.tags.is_empty() {
             stage
                 .inventory
                 .branches
@@ -281,6 +304,99 @@ impl GitAdapter {
                 .map_err(|error| native_error("import Git revision", error))?;
             revisions.insert(*id, revision);
         }
+        let tag_selections = if options.refs.is_empty() && options.tags.is_empty() {
+            stage
+                .inventory
+                .tags
+                .keys()
+                .map(|name| {
+                    Ok(TagImport {
+                        git_ref: name.clone(),
+                        native_tag: RefName::new(
+                            name.strip_prefix("refs/tags/")
+                                .ok_or_else(|| Error::InvalidRef(name.clone()))?,
+                        )
+                        .map_err(|e| native_error("validate tag name", e))?,
+                        expected: None,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            options.tags.clone()
+        };
+        let mut tag_updates = Vec::new();
+        let mut tag_names = BTreeSet::new();
+        for selection in tag_selections {
+            if !tag_names.insert(selection.native_tag.clone()) {
+                return Err(Error::InvalidRef("duplicate native tag target".into()));
+            }
+            let inventory = stage
+                .inventory
+                .tags
+                .get(&selection.git_ref)
+                .ok_or_else(|| Error::InvalidRef(selection.git_ref.clone()))?;
+            let target = match inventory.target_kind {
+                crate::GitTagTargetKind::Commit => TagTarget::Revision {
+                    revision: *revisions
+                        .get(&inventory.target)
+                        .ok_or_else(|| Error::InvalidSource("tag revision missing".into()))?,
+                },
+                crate::GitTagTargetKind::Blob => TagTarget::Blob {
+                    blob: *blobs
+                        .get(&inventory.target)
+                        .ok_or_else(|| Error::InvalidSource("tag blob missing".into()))?,
+                },
+                crate::GitTagTargetKind::Tree => {
+                    let mut entries = BTreeMap::new();
+                    flatten_tree(
+                        &stage,
+                        inventory.target,
+                        "",
+                        &blobs,
+                        &mut entries,
+                        &self.tool.config.limits,
+                        0,
+                    )?;
+                    TagTarget::Tree {
+                        tree: repository
+                            .put_tree(&Tree { entries }, cancel)
+                            .map_err(|e| native_error("import tagged tree", e))?,
+                    }
+                }
+                crate::GitTagTargetKind::Tag => {
+                    return Err(Error::InvalidSource("unresolved tag".into()));
+                }
+            };
+            let mut annotations = Vec::new();
+            for id in &inventory.annotated_objects {
+                let annotation = stage
+                    .tags
+                    .get(id)
+                    .ok_or_else(|| Error::InvalidSource("tag annotation missing".into()))?;
+                let raw = repository
+                    .put_blob(
+                        &mut Cursor::new(&annotation.raw),
+                        annotation.raw.len() as u64,
+                        cancel,
+                    )
+                    .map_err(|e| native_error("preserve tag annotation", e))?;
+                annotations.push(GitTagAnnotation {
+                    object_id: id.to_string(),
+                    raw,
+                });
+            }
+            tag_updates.push(TagUpdate {
+                name: selection.native_tag,
+                expected: selection.expected,
+                new: Some(NativeTag {
+                    target,
+                    origin: Some(GitTagOrigin {
+                        target_object_id: inventory.target.to_string(),
+                        annotations,
+                    }),
+                }),
+            });
+        }
         let mut updates = selections
             .iter()
             .map(|selection| {
@@ -306,7 +422,7 @@ impl GitAdapter {
             .collect();
         let imported: Vec<_> = revisions.values().copied().collect();
         let operation = repository
-            .import_revisions(&imported, &updates, cancel)
+            .import_history(&imported, &updates, &tag_updates, cancel)
             .map_err(|error| native_error("publish imported native history", error))?;
         Ok(ImportReport {
             operation,
@@ -415,6 +531,26 @@ impl GitAdapter {
                         })
                     })
                     .collect::<Result<Vec<_>>>()?,
+                tags: if options.tags.is_empty() {
+                    stage
+                        .inventory
+                        .tags
+                        .keys()
+                        .map(|name| {
+                            Ok(TagImport {
+                                git_ref: name.clone(),
+                                native_tag: RefName::new(
+                                    name.strip_prefix("refs/tags/")
+                                        .ok_or_else(|| Error::InvalidRef(name.clone()))?,
+                                )
+                                .map_err(|e| native_error("validate clone tag", e))?,
+                                expected: None,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                } else {
+                    options.tags.clone()
+                },
             }
         } else {
             options.clone()
@@ -492,6 +628,9 @@ impl GitAdapter {
         options: &ExportOptions,
         cancel: &CancellationToken,
     ) -> Result<ExportReport> {
+        let _retention = repository
+            .retention_lease(cancel)
+            .map_err(|error| native_error("retain native preparation", error))?;
         let prepared = self.prepare_export(repository, options, cancel)?;
         if target.exists()
             && fs::read_dir(target)
@@ -542,7 +681,12 @@ impl GitAdapter {
             cancel,
         )?;
         // HEAD is cosmetic and only set inside this newly created target.
-        if let Some(name) = prepared.report.refs.keys().next() {
+        if let Some(name) = prepared
+            .report
+            .refs
+            .keys()
+            .find(|name| name.starts_with("refs/heads/"))
+        {
             self.tool.run(
                 Some(&target),
                 "set exported symbolic HEAD",
@@ -575,10 +719,14 @@ impl GitAdapter {
         cancel: &CancellationToken,
         before_publication: impl FnOnce(),
     ) -> Result<PushReport> {
+        let _retention = repository
+            .retention_lease(cancel)
+            .map_err(|error| native_error("retain native preparation", error))?;
         validate_git_ref(&request.git_ref)?;
-        if !request.git_ref.starts_with("refs/heads/") {
+        if !request.git_ref.starts_with("refs/heads/") && !request.git_ref.starts_with("refs/tags/")
+        {
             return Err(Error::Unsupported(vec![
-                "publication only supports ordinary branch refs".into(),
+                "publication only supports branch or tag refs".into(),
             ]));
         }
         let observed = source::target_ref(&self.tool, &request.remote, &request.git_ref, cancel)?;
@@ -589,10 +737,22 @@ impl GitAdapter {
             });
         }
         let options = ExportOptions {
-            refs: vec![RefExport {
-                native_ref: request.native_ref.clone(),
-                git_ref: request.git_ref.clone(),
-            }],
+            refs: if request.git_ref.starts_with("refs/heads/") {
+                vec![RefExport {
+                    native_ref: request.native_ref.clone(),
+                    git_ref: request.git_ref.clone(),
+                }]
+            } else {
+                Vec::new()
+            },
+            tags: if request.git_ref.starts_with("refs/tags/") {
+                vec![TagExport {
+                    native_tag: request.native_ref.clone(),
+                    git_ref: request.git_ref.clone(),
+                }]
+            } else {
+                Vec::new()
+            },
             committer: request.committer.clone(),
         };
         let prepared = self.prepare_export(repository, &options, cancel)?;
@@ -612,7 +772,9 @@ impl GitAdapter {
                 cancel,
             )?;
             if request.non_fast_forward == NonFastForwardPolicy::Reject
-                && !is_ancestor(&self.tool, prepared.cache.path(), old, published, cancel)?
+                && old != published
+                && (request.git_ref.starts_with("refs/tags/")
+                    || !is_ancestor(&self.tool, prepared.cache.path(), old, published, cancel)?)
             {
                 return Err(Error::NonFastForward);
             }
@@ -627,7 +789,7 @@ impl GitAdapter {
                 }
                 verify_existing_target_objects(&self.tool, &target, &prepared.objects, cancel)?;
             }
-            GitSource::Https(_) => {}
+            GitSource::Https(_) | GitSource::Ssh(_) => {}
         }
         let lease = format!(
             "--force-with-lease={}:{}",
@@ -663,7 +825,7 @@ impl GitAdapter {
                         definite,
                     ))
                 }),
-            GitSource::Https(url) => crate::wire::push(
+            GitSource::Https(url) | GitSource::Ssh(url) => crate::wire::push(
                 &self.tool,
                 url,
                 prepared.cache.path(),
@@ -735,7 +897,7 @@ impl GitAdapter {
         let view = repository
             .view(cancel)
             .map_err(|error| native_error("read native references", error))?;
-        let selections = if options.refs.is_empty() {
+        let selections = if options.refs.is_empty() && options.tags.is_empty() {
             view.refs
                 .keys()
                 .map(|name| RefExport {
@@ -782,7 +944,7 @@ impl GitAdapter {
         for (_, root) in &roots {
             builder.revision(*root)?;
         }
-        let refs = roots
+        let mut refs: BTreeMap<String, GitObjectId> = roots
             .iter()
             .map(|(name, root)| {
                 builder
@@ -793,6 +955,35 @@ impl GitAdapter {
                     .ok_or_else(|| Error::InvalidSource("exported revision missing".into()))
             })
             .collect::<Result<_>>()?;
+        let tag_selections = if options.refs.is_empty() && options.tags.is_empty() {
+            view.tags
+                .keys()
+                .map(|name| TagExport {
+                    native_tag: name.clone(),
+                    git_ref: format!("refs/tags/{}", name.as_str()),
+                })
+                .collect()
+        } else {
+            options.tags.clone()
+        };
+        if !options.refs.is_empty() && options.tags.is_empty() && !view.tags.is_empty() {
+            builder
+                .warnings
+                .insert("Explicit branch selection omits native tags".into());
+        }
+        for selection in tag_selections {
+            validate_git_ref(&selection.git_ref)?;
+            if !selection.git_ref.starts_with("refs/tags/")
+                || !targets.insert(selection.git_ref.clone())
+            {
+                return Err(Error::InvalidRef(selection.git_ref));
+            }
+            let tag = view
+                .tags
+                .get(&selection.native_tag)
+                .ok_or_else(|| Error::InvalidRef(selection.native_tag.as_str().into()))?;
+            refs.insert(selection.git_ref, builder.tag(tag)?);
+        }
         let report = ExportReport {
             refs,
             revision_mapping: builder.revisions.clone(),
@@ -959,6 +1150,49 @@ impl ExportBuilder<'_> {
         self.object_kinds.insert(id, kind.into());
         Ok(id)
     }
+    fn tag(&mut self, tag: &NativeTag) -> Result<GitObjectId> {
+        let (mut id, mut kind) = match tag.target {
+            TagTarget::Revision { revision } => {
+                (self.revision(revision)?, crate::GitTagTargetKind::Commit)
+            }
+            TagTarget::Tree { tree } => (self.tree(tree)?, crate::GitTagTargetKind::Tree),
+            TagTarget::Blob { blob } => {
+                let raw = self.read_blob(blob)?;
+                (self.write("blob", &raw)?, crate::GitTagTargetKind::Blob)
+            }
+        };
+        if let Some(origin) = &tag.origin {
+            if origin.target_object_id.parse::<GitObjectId>()? != id {
+                return Err(Error::InvalidSource(
+                    "tag target differs from preserved Git origin".into(),
+                ));
+            }
+            for annotation in origin.annotations.iter().rev() {
+                let expected: GitObjectId = annotation.object_id.parse()?;
+                let raw = self.read_blob(annotation.raw)?;
+                if objects::object_id("tag", &raw) != expected {
+                    return Err(Error::InvalidObject {
+                        object: expected.to_string(),
+                        reason: "tag annotation hash mismatch".into(),
+                    });
+                }
+                let parsed = objects::tag(expected, raw.clone())?;
+                if parsed.target != id || parsed.target_kind != kind {
+                    return Err(Error::InvalidObject {
+                        object: expected.to_string(),
+                        reason: "tag annotation target or kind mismatch".into(),
+                    });
+                }
+                if parsed.signed {
+                    self.warnings
+                        .insert("Preserved Git tag signatures are opaque and unverified".into());
+                }
+                id = self.write("tag", &raw)?;
+                kind = crate::GitTagTargetKind::Tag;
+            }
+        }
+        Ok(id)
+    }
     fn revision(&mut self, root: RevisionId) -> Result<GitObjectId> {
         let mut pending = vec![(root, false)];
         let mut visiting = BTreeSet::new();
@@ -1045,6 +1279,16 @@ impl ExportBuilder<'_> {
                 {
                     Some(self.write("commit", &raw)?)
                 } else {
+                    if parsed.signed {
+                        self.warnings.insert(
+                            "Rewritten Git commit does not retain its original signature".into(),
+                        );
+                    }
+                    if parsed.has_mergetags {
+                        self.warnings.insert(format!(
+                            "Rewritten Git revision {id} does not retain its original merge tag headers"
+                        ));
+                    }
                     None
                 }
             } else {
@@ -1133,17 +1377,25 @@ impl ExportBuilder<'_> {
                         }
                     };
                     let bytes = self.read_blob(*blob)?;
+                    if path.as_str().split('/').next_back() == Some(".gitattributes") {
+                        self.warnings.insert(
+                            "Git attributes exported as committed bytes; an ordinary Git checkout may apply conversions that native workspaces do not apply".into(),
+                        );
+                    }
                     if path
                         .as_str()
                         .split('/')
                         .next_back()
-                        .is_some_and(|name| name == ".gitattributes" || name == ".gitmodules")
-                        || bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n")
+                        .is_some_and(|name| name == ".gitmodules")
+                        || (bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n")
+                            && self.adapter.tool.config.lfs_policy == crate::LfsPolicy::Reject)
                     {
                         return Err(Error::Unsupported(vec![
-                            "attributes, submodule config or LFS source cannot be exported safely"
-                                .into(),
+                            "submodule config or LFS source cannot be exported safely".into(),
                         ]));
+                    }
+                    if bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n") {
+                        self.warnings.insert("Git LFS pointer bytes exported; external LFS object content has not been uploaded".into());
                     }
                     (mode, Some(self.write("blob", &bytes)?))
                 }
@@ -1780,7 +2032,7 @@ fn ensure_remote_object(
                 },
             )?;
         }
-        GitSource::Https(url) => {
+        GitSource::Https(url) | GitSource::Ssh(url) => {
             crate::wire::fetch_lease(tool, url, cache, git_ref, expected, cancel)?
         }
     }

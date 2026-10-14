@@ -16,7 +16,7 @@ fn failed_capture_preserves_checkpoint(boundary: DurableBoundary) {
         .unwrap()
         .parent()
         .unwrap()
-        .join(".artifacts/tmp");
+        .join(".artifacts/local/tmp");
     fs::create_dir_all(&root).unwrap();
     let fixture = tempfile::tempdir_in(root).unwrap();
     let armed = Arc::new(AtomicBool::new(false));

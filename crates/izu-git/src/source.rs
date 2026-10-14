@@ -61,6 +61,7 @@ pub(crate) struct Stage {
     pub order: Vec<GitObjectId>,
     pub trees: BTreeMap<GitObjectId, Vec<TreeEntry>>,
     pub blobs: BTreeMap<GitObjectId, Vec<u8>>,
+    pub tags: BTreeMap<GitObjectId, objects::Tag>,
     pub _cache: Cache,
 }
 
@@ -121,6 +122,9 @@ pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Resolve only the explicitly selected repository's bounded metadata. Git is
+/// never run in this directory, so source config, hooks and worktree files do
+/// not become executable policy.
 pub(crate) fn local_git_dir(path: &Path) -> Result<PathBuf> {
     let source = fs::canonicalize(path).map_err(|source| Error::Io {
         action: "resolve explicit Git source",
@@ -130,12 +134,21 @@ pub(crate) fn local_git_dir(path: &Path) -> Result<PathBuf> {
         return Err(Error::InvalidSource("source is not a directory".into()));
     }
     let candidate = source.join(".git");
-    let git_directory = match fs::symlink_metadata(&candidate) {
+    let directory = match fs::symlink_metadata(&candidate) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => candidate,
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            let bytes = read_bounded(&candidate, 4096)?;
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| Error::InvalidSource("non-UTF8 Git file".into()))?;
+            let value = text
+                .strip_prefix("gitdir: ")
+                .ok_or_else(|| Error::InvalidSource("malformed Git file".into()))?;
+            resolve_metadata_directory(&source, value.trim_end_matches(['\r', '\n']))?
+        }
         Ok(_) => {
-            return Err(Error::Unsupported(vec![
-                "Git files, linked worktrees and symbolic .git directories".into(),
-            ]));
+            return Err(Error::InvalidSource(
+                "symbolic or special .git entry".into(),
+            ));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => source,
         Err(source) => {
@@ -145,19 +158,55 @@ pub(crate) fn local_git_dir(path: &Path) -> Result<PathBuf> {
             });
         }
     };
-    for directory in ["objects", "refs"] {
-        let metadata =
-            fs::symlink_metadata(git_directory.join(directory)).map_err(|source| Error::Io {
-                action: "inspect Git directory",
-                source,
-            })?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(Error::InvalidSource(
-                "Git object/ref directory is missing or symbolic".into(),
-            ));
-        }
+    let common = common_git_dir(&directory)?;
+    for name in ["objects", "refs"] {
+        require_metadata_directory(&common.join(name))?;
     }
-    Ok(git_directory)
+    Ok(directory)
+}
+
+fn require_metadata_directory(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| Error::Io {
+        action: "inspect Git directory",
+        source,
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(Error::InvalidSource(
+            "Git metadata directory is missing or symbolic".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_metadata_directory(base: &Path, value: &str) -> Result<PathBuf> {
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(Error::InvalidSource(
+            "invalid Git metadata directory path".into(),
+        ));
+    }
+    let candidate = base.join(value);
+    require_metadata_directory(&candidate)?;
+    fs::canonicalize(candidate).map_err(|source| Error::Io {
+        action: "resolve Git metadata directory",
+        source,
+    })
+}
+
+fn common_git_dir(directory: &Path) -> Result<PathBuf> {
+    let path = directory.join("commondir");
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            let bytes = read_bounded(&path, 4096)?;
+            let value = std::str::from_utf8(&bytes)
+                .map_err(|_| Error::InvalidSource("non-UTF8 common Git directory".into()))?;
+            resolve_metadata_directory(directory, value.trim_end_matches(['\r', '\n']))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(directory.to_owned()),
+        Err(source) => Err(Error::Io {
+            action: "inspect common Git directory",
+            source,
+        }),
+    }
 }
 
 fn inspect_config(directory: &Path, limits: &GitLimits) -> Result<Vec<String>> {
@@ -209,7 +258,6 @@ fn inspect_config(directory: &Path, limits: &GitLimits) -> Result<Vec<String>> {
         "objects/info/http-alternates",
         "shallow",
         "info/grafts",
-        "commondir",
     ] {
         if directory.join(path).exists() {
             unsupported.push(format!("source metadata {path}"));
@@ -220,6 +268,11 @@ fn inspect_config(directory: &Path, limits: &GitLimits) -> Result<Vec<String>> {
 
 pub(crate) fn bare_target(path: &Path, limits: &GitLimits) -> Result<PathBuf> {
     let directory = local_git_dir(path)?;
+    if directory.join("commondir").exists() {
+        return Err(Error::Unsupported(vec![
+            "local publication target is a linked worktree".into(),
+        ]));
+    }
     let bytes = read_bounded(&directory.join("config"), limits.max_config_bytes)?;
     let config = std::str::from_utf8(&bytes)
         .map_err(|_| Error::InvalidSource("non-UTF8 target Git config".into()))?;
@@ -327,8 +380,9 @@ type LocalRefSnapshot = (BTreeMap<String, GitObjectId>, Option<String>, Vec<Stri
 
 pub(crate) fn local_refs(directory: &Path, limits: &GitLimits) -> Result<LocalRefSnapshot> {
     let mut refs = BTreeMap::new();
-    let unsupported = inspect_config(directory, limits)?;
-    let packed = directory.join("packed-refs");
+    let common = common_git_dir(directory)?;
+    let unsupported = inspect_config(&common, limits)?;
+    let packed = common.join("packed-refs");
     if packed.exists() {
         let bytes = read_bounded(&packed, limits.max_config_bytes)?;
         let value = std::str::from_utf8(&bytes)
@@ -349,7 +403,7 @@ pub(crate) fn local_refs(directory: &Path, limits: &GitLimits) -> Result<LocalRe
             }
         }
     }
-    read_loose_refs(directory, "refs", 0, limits, &mut refs)?;
+    read_loose_refs(&common, "refs", 0, limits, &mut refs)?;
     let head = read_bounded(&directory.join("HEAD"), 4096)?;
     let head = std::str::from_utf8(&head)
         .map_err(|_| Error::InvalidSource("non-UTF8 HEAD".into()))?
@@ -372,9 +426,13 @@ pub(crate) fn source_argument(source: &GitSource) -> Result<OsString> {
                 source,
             })?
             .into_os_string()),
+        GitSource::Ssh(value) => match GitSource::ssh(value.clone())? {
+            GitSource::Ssh(value) => Ok(value.into()),
+            _ => Err(Error::InvalidSource("invalid SSH source".into())),
+        },
         GitSource::Https(value) => match GitSource::https(value.clone())? {
             GitSource::Https(value) => Ok(value.into()),
-            GitSource::Local(_) => Err(Error::InvalidSource("invalid HTTPS source".into())),
+            _ => Err(Error::InvalidSource("invalid HTTPS source".into())),
         },
     }
 }
@@ -398,7 +456,7 @@ pub(crate) fn stage_selected(
         GitSource::Local(path) => {
             let directory = local_git_dir(path)?;
             let (refs, head, unsupported) = local_refs(&directory, &tool.config.limits)?;
-            let path = directory.join("objects");
+            let path = common_git_dir(&directory)?.join("objects");
             let path = path
                 .to_str()
                 .ok_or_else(|| Error::Unsupported(vec!["non-UTF8 Git object directory".into()]))?;
@@ -417,7 +475,7 @@ pub(crate) fn stage_selected(
             })?;
             (refs, head, unsupported)
         }
-        GitSource::Https(url) => {
+        GitSource::Https(url) | GitSource::Ssh(url) => {
             let advertised = crate::wire::refs(tool, url, cancel)?;
             let refs = advertised.refs.clone();
             let head = advertised.head.clone();
@@ -429,9 +487,9 @@ pub(crate) fn stage_selected(
     let refs = if let Some(selected) = selected {
         for name in selected {
             validate_git_ref(name)?;
-            if !name.starts_with("refs/heads/") {
+            if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
                 return Err(Error::Unsupported(vec![format!(
-                    "selected source reference {name} is not an ordinary branch"
+                    "selected source reference {name} is not a branch or tag"
                 )]));
             }
             if !refs.contains_key(name) {
@@ -451,7 +509,10 @@ pub(crate) fn stage_selected(
     } else {
         refs
     };
-    for name in refs.keys().filter(|name| !name.starts_with("refs/heads/")) {
+    for name in refs
+        .keys()
+        .filter(|name| !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/"))
+    {
         unsupported.push(format!("source reference {name}"));
     }
     if selected.is_none() {
@@ -468,7 +529,8 @@ pub(crate) fn stage_selected(
     }
     if unsupported.is_empty()
         && !refs.is_empty()
-        && let (GitSource::Https(url), Some(advertised)) = (source, https_advertised.as_ref())
+        && let (GitSource::Https(url) | GitSource::Ssh(url), Some(advertised)) =
+            (source, https_advertised.as_ref())
     {
         let wants: Vec<_> = refs.values().copied().collect();
         crate::wire::fetch(tool, url, cache.path(), advertised, &wants, cancel)?;
@@ -483,26 +545,41 @@ pub(crate) fn stage_selected(
             ));
         }
     }
+    let tag_refs: BTreeMap<_, _> = refs
+        .iter()
+        .filter(|(name, _)| name.starts_with("refs/tags/"))
+        .map(|(name, id)| (name.clone(), *id))
+        .collect();
     let branches = refs
         .iter()
         .filter(|(name, _)| name.starts_with("refs/heads/"))
         .map(|(name, object)| (name.clone(), *object))
         .collect();
+    let omitted_tags = omitted_refs
+        .keys()
+        .any(|name| name.starts_with("refs/tags/"));
     let mut result = Stage {
         inventory: GitInventory {
             object_format: "sha1".into(),
             branches,
+            tags: BTreeMap::new(),
             omitted_refs,
             symbolic_head: head,
             commits: 0,
             trees: 0,
             blobs: 0,
             unsupported,
+            warnings: if omitted_tags {
+                vec!["Explicit source selection omits tags".into()]
+            } else {
+                Vec::new()
+            },
         },
         commits: BTreeMap::new(),
         order: Vec::new(),
         trees: BTreeMap::new(),
         blobs: BTreeMap::new(),
+        tags: BTreeMap::new(),
         _cache: cache,
     };
     if !result.inventory.unsupported.is_empty() {
@@ -520,6 +597,20 @@ pub(crate) fn stage_selected(
         .values()
         .map(|id| (*id, false))
         .collect();
+    for (name, root) in tag_refs {
+        let inventory = load_tag_graph(&mut loader, &mut result, root)?;
+        match inventory.target_kind {
+            crate::GitTagTargetKind::Commit => pending.push((inventory.target, false)),
+            crate::GitTagTargetKind::Tree => {
+                load_tree(&mut loader, &mut result, inventory.target, 0)?
+            }
+            crate::GitTagTargetKind::Blob => load_blob(&mut loader, &mut result, inventory.target)?,
+            crate::GitTagTargetKind::Tag => {
+                return Err(Error::InvalidSource("tag chain did not resolve".into()));
+            }
+        }
+        result.inventory.tags.insert(name.clone(), inventory);
+    }
     let mut visiting = BTreeSet::new();
     while let Some((id, ready)) = pending.pop() {
         if result.order.len() >= tool.config.limits.max_objects {
@@ -554,7 +645,19 @@ pub(crate) fn stage_selected(
     result.inventory.commits = result.commits.len();
     result.inventory.trees = result.trees.len();
     result.inventory.blobs = result.blobs.len();
-    let source_trees: BTreeSet<_> = result.commits.values().map(|commit| commit.tree).collect();
+    let source_trees: BTreeSet<_> = result
+        .commits
+        .values()
+        .map(|commit| commit.tree)
+        .chain(
+            result
+                .inventory
+                .tags
+                .values()
+                .filter(|tag| tag.target_kind == crate::GitTagTargetKind::Tree)
+                .map(|tag| tag.target),
+        )
+        .collect();
     for tree in source_trees {
         validate_source_namespace(
             &result,
@@ -568,6 +671,8 @@ pub(crate) fn stage_selected(
     }
     result.inventory.unsupported.sort();
     result.inventory.unsupported.dedup();
+    result.inventory.warnings.sort();
+    result.inventory.warnings.dedup();
     Ok(result)
 }
 
@@ -633,6 +738,24 @@ struct Loader<'a> {
     cancel: &'a CancellationToken,
 }
 impl Loader<'_> {
+    fn kind(&self, directory: &Path, id: GitObjectId) -> Result<crate::GitTagTargetKind> {
+        let bytes = self
+            .tool
+            .run(
+                Some(directory),
+                "inspect Git tag target kind",
+                &GitTool::args(&["cat-file", "-t", &id.to_string()]),
+                &[],
+                64,
+                self.cancel,
+            )?
+            .stdout;
+        let kind = std::str::from_utf8(&bytes).map_err(|_| Error::InvalidObject {
+            object: id.to_string(),
+            reason: "non-UTF8 object kind".into(),
+        })?;
+        crate::GitTagTargetKind::parse(kind.trim_end_matches('\n'))
+    }
     fn read(&mut self, directory: &Path, id: GitObjectId, kind: &str) -> Result<Vec<u8>> {
         if self.object_count >= self.tool.config.limits.max_objects {
             return Err(Error::Limit("Git object count"));
@@ -694,6 +817,86 @@ impl Loader<'_> {
     }
 }
 
+fn load_tag_graph(
+    loader: &mut Loader<'_>,
+    stage: &mut Stage,
+    root: GitObjectId,
+) -> Result<crate::GitTagInventory> {
+    let mut target = root;
+    let mut expected_kind = None;
+    let mut seen = BTreeSet::new();
+    let mut annotated_objects = Vec::new();
+    let mut signed_objects = Vec::new();
+    let mut annotation_names = Vec::new();
+    let mut annotation_taggers = Vec::new();
+    let mut annotation_byte_lengths = Vec::new();
+    loop {
+        if loader.cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        if !seen.insert(target) {
+            return Err(Error::InvalidSource("Git tag target cycle".into()));
+        }
+        let kind = if stage.tags.contains_key(&target) {
+            crate::GitTagTargetKind::Tag
+        } else {
+            loader.kind(stage._cache.path(), target)?
+        };
+        if expected_kind.is_some_and(|expected| expected != kind) {
+            return Err(Error::InvalidObject {
+                object: target.to_string(),
+                reason: "tag declared target type does not match object".into(),
+            });
+        }
+        if kind != crate::GitTagTargetKind::Tag {
+            return Ok(crate::GitTagInventory {
+                object: root,
+                target,
+                target_kind: kind,
+                annotated_objects,
+                signed_objects,
+                annotation_names,
+                annotation_taggers,
+                annotation_byte_lengths,
+            });
+        }
+        if annotated_objects.len() >= loader.tool.config.limits.max_tree_depth {
+            return Err(Error::Limit("Git tag chain depth"));
+        }
+        if !stage.tags.contains_key(&target) {
+            let parsed = objects::tag(target, loader.read(stage._cache.path(), target, "tag")?)?;
+            stage.tags.insert(target, parsed);
+        }
+        let parsed = stage
+            .tags
+            .get(&target)
+            .ok_or_else(|| Error::InvalidSource("staged tag object missing".into()))?;
+        annotated_objects.push(target);
+        annotation_byte_lengths.push(parsed.raw.len());
+        if parsed.signed {
+            signed_objects.push(target);
+        }
+        annotation_names.push(parsed.name.clone());
+        annotation_taggers.push(parsed.tagger.clone());
+        target = parsed.target;
+        expected_kind = Some(parsed.target_kind);
+    }
+}
+
+fn load_blob(loader: &mut Loader<'_>, stage: &mut Stage, id: GitObjectId) -> Result<()> {
+    if !stage.blobs.contains_key(&id) {
+        let bytes = loader.read(stage._cache.path(), id, "blob")?;
+        if bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n") {
+            match loader.tool.config.lfs_policy {
+                crate::LfsPolicy::Reject => stage.inventory.unsupported.push("Git LFS pointer (explicit pointer preservation is available)".into()),
+                crate::LfsPolicy::PreservePointers => stage.inventory.warnings.push("Git LFS pointer bytes preserved; external LFS object content is unavailable and has not been downloaded".into()),
+            }
+        }
+        stage.blobs.insert(id, bytes);
+    }
+    Ok(())
+}
+
 fn load_tree(
     loader: &mut Loader<'_>,
     stage: &mut Stage,
@@ -709,7 +912,12 @@ fn load_tree(
     let bytes = loader.read(stage._cache.path(), id, "tree")?;
     let entries = objects::tree(id, &bytes, loader.tool.config.limits.max_tree_entries)?;
     for entry in &entries {
-        if entry.name == ".gitattributes" || entry.name == ".gitmodules" {
+        if entry.name == ".gitattributes" {
+            stage.inventory.warnings.push(
+                "Git attributes preserved as committed bytes; native workspaces do not apply text/EOL/ident or clean/smudge conversions".into(),
+            );
+        }
+        if entry.name == ".gitmodules" {
             stage
                 .inventory
                 .unsupported
@@ -722,13 +930,7 @@ fn load_tree(
                 .unsupported
                 .push("Git submodule (gitlink)".into()),
             0o100644 | 0o100755 | 0o120000 => {
-                if !stage.blobs.contains_key(&entry.object) {
-                    let bytes = loader.read(stage._cache.path(), entry.object, "blob")?;
-                    if bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n") {
-                        stage.inventory.unsupported.push("Git LFS pointer".into());
-                    }
-                    stage.blobs.insert(entry.object, bytes);
-                }
+                load_blob(loader, stage, entry.object)?;
             }
             mode => stage
                 .inventory
@@ -755,7 +957,9 @@ pub(crate) fn target_ref(
             }
             Ok(refs.get(name).copied())
         }
-        GitSource::Https(url) => crate::wire::target_ref(tool, url, name, cancel),
+        GitSource::Https(url) | GitSource::Ssh(url) => {
+            crate::wire::target_ref(tool, url, name, cancel)
+        }
     }
 }
 

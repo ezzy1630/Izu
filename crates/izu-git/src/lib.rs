@@ -5,16 +5,18 @@
 mod objects;
 mod pack;
 mod source;
+mod ssh;
 mod tool;
 mod transfer;
 mod wire;
 
 pub use izu_process::WorkerLauncher;
-pub use tool::GitToolConfig;
+pub use ssh::SshTransport;
 pub use tool::HttpsAuthentication;
+pub use tool::{GitToolConfig, LfsPolicy};
 pub use transfer::{
     ExportOptions, ExportReport, GitAdapter, GitSignature, ImportOptions, ImportReport,
-    NonFastForwardPolicy, PushReport, PushRequest, RefExport, RefImport,
+    NonFastForwardPolicy, PushReport, PushRequest, RefExport, RefImport, TagExport, TagImport,
 };
 
 use serde::{Deserialize, Serialize};
@@ -255,11 +257,45 @@ impl<'de> Deserialize<'de> for GitObjectId {
 pub enum GitSource {
     Local(PathBuf),
     Https(String),
+    Ssh(String),
 }
 
 impl GitSource {
     pub fn local(path: impl Into<PathBuf>) -> Self {
         Self::Local(path.into())
+    }
+    /// Canonical SSH URL with an explicit user and absolute repository path.
+    /// SCP syntax and remote shell metacharacters are deliberately refused.
+    pub fn ssh(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        let parsed = reqwest::Url::parse(&value)
+            .map_err(|_| Error::InvalidSource("invalid explicit SSH repository URL".into()))?;
+        let user = parsed.username();
+        let path = parsed.path();
+        if parsed.scheme() != "ssh"
+            || parsed.as_str() != value
+            || value.len() > 4096
+            || parsed.host_str().is_none()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || user.is_empty()
+            || user.starts_with('-')
+            || !user
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            || path.len() < 2
+            || path.ends_with('/')
+            || !path
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+            || path.split('/').any(|part| part == "." || part == "..")
+        {
+            return Err(Error::InvalidSource(
+                "unsupported or noncanonical SSH repository URL".into(),
+            ));
+        }
+        Ok(Self::Ssh(value))
     }
     /// Explicit HTTPS URLs only. Userinfo, queries, fragments and control bytes
     /// are rejected, so URLs cannot act as credentials or command options.
@@ -297,10 +333,48 @@ impl GitSource {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitTagTargetKind {
+    Commit,
+    Tree,
+    Blob,
+    Tag,
+}
+impl GitTagTargetKind {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        match value {
+            "commit" => Ok(Self::Commit),
+            "tree" => Ok(Self::Tree),
+            "blob" => Ok(Self::Blob),
+            "tag" => Ok(Self::Tag),
+            _ => Err(Error::InvalidSource(
+                "unsupported Git tag target type".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GitTagInventory {
+    pub object: GitObjectId,
+    pub target: GitObjectId,
+    pub target_kind: GitTagTargetKind,
+    /// Outer-to-inner annotated objects; empty for a lightweight reference.
+    pub annotated_objects: Vec<GitObjectId>,
+    /// Embedded signature markers are opaque and unverified.
+    pub signed_objects: Vec<GitObjectId>,
+    pub annotation_names: Vec<String>,
+    pub annotation_taggers: Vec<Option<String>>,
+    pub annotation_byte_lengths: Vec<usize>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct GitInventory {
     pub object_format: String,
     pub branches: BTreeMap<String, GitObjectId>,
+    /// Inspected tag graphs. Inventory does not mean native adoption.
+    pub tags: BTreeMap<String, GitTagInventory>,
     /// Every advertised ref outside an explicitly selected branch scope.
     /// These refs were not adopted, including tags and pull/request refs.
     pub omitted_refs: BTreeMap<String, GitObjectId>,
@@ -309,6 +383,8 @@ pub struct GitInventory {
     pub trees: usize,
     pub blobs: usize,
     pub unsupported: Vec<String>,
+    /// Interchange limitations, including unavailable external LFS contents.
+    pub warnings: Vec<String>,
 }
 
 pub(crate) fn validate_git_ref(value: &str) -> Result<()> {
