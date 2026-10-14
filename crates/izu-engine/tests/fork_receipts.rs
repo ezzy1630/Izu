@@ -4,7 +4,7 @@ use std::path::Path;
 
 #[test]
 fn fork_receipt_retains_its_publication_after_another_controller_advances_history() {
-    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/tmp");
+    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/local/tmp");
     fs::create_dir_all(&scratch).unwrap();
     let fixture = tempfile::tempdir_in(scratch).unwrap();
     let repository = Repository::init(fixture.path(), RepositoryOptions::default()).unwrap();

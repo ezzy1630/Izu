@@ -1,5 +1,5 @@
 use izu_process::{
-    BaseEnvironment, CommandSpec, OutputPolicy, RunOptions, Termination, WorkerLauncher,
+    BaseEnvironment, CommandSpec, OutputPolicy, RunError, RunOptions, Termination, WorkerLauncher,
 };
 use serde::Serialize;
 use std::{
@@ -36,6 +36,8 @@ pub struct Run {
     pub stderr: String,
     pub output_truncated: bool,
     pub output_capture_error: Option<String>,
+    pub stdout_eof: bool,
+    pub stderr_eof: bool,
     pub process_termination: String,
     pub cleanup_status: String,
     pub worker_executable: PathBuf,
@@ -202,7 +204,7 @@ impl Runner {
             &|| false,
             close_stdin,
         )
-        .map_err(io::Error::other)?;
+        .map_err(process_error)?;
         let nanos = |duration: Duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
         let command_elapsed_ns = outcome.command_elapsed.map(nanos);
         let mut errors = Vec::new();
@@ -216,7 +218,10 @@ impl Runner {
             errors.push(format!("process terminated: {:?}", outcome.termination));
         }
         if !outcome.stdout.eof || !outcome.stderr.eof {
-            errors.push("output stream EOF not observed".to_owned());
+            errors.push(format!(
+                "output stream EOF not observed: stdout={}, stderr={}",
+                outcome.stdout.eof, outcome.stderr.eof,
+            ));
         }
         let timed_out = matches!(outcome.termination, Termination::TimedOut);
         let stderr = String::from_utf8_lossy(&outcome.stderr.bytes).into_owned();
@@ -240,6 +245,8 @@ impl Runner {
             stderr,
             output_truncated: outcome.stdout.dropped > 0 || outcome.stderr.dropped > 0,
             output_capture_error: (!errors.is_empty()).then(|| errors.join("; ")),
+            stdout_eof: outcome.stdout.eof,
+            stderr_eof: outcome.stderr.eof,
             process_termination: format!("{:?}", outcome.termination),
             cleanup_status: format!("{:?}", outcome.cleanup),
             worker_executable: outcome.worker_executable,
@@ -263,5 +270,37 @@ impl Runner {
             bytes_read: None,
             bytes_written: None,
         })
+    }
+}
+
+// Preserve the shared engine's prelaunch phase in the adapter's error type.
+// A timeout here carries no child identity or cleanup acknowledgement.
+fn process_error(error: RunError) -> io::Error {
+    let kind = match &error {
+        RunError::TimedOut => io::ErrorKind::TimedOut,
+        RunError::Cancelled => io::ErrorKind::Interrupted,
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn prelaunch_errors_preserve_phase_and_typed_payload() {
+        for (error, kind) in [
+            (RunError::TimedOut, io::ErrorKind::TimedOut),
+            (RunError::Cancelled, io::ErrorKind::Interrupted),
+        ] {
+            let error = process_error(error);
+            assert_eq!(error.kind(), kind);
+            let source = error.get_ref().unwrap().downcast_ref::<RunError>().unwrap();
+            assert!(matches!(
+                (kind, source),
+                (io::ErrorKind::TimedOut, RunError::TimedOut)
+                    | (io::ErrorKind::Interrupted, RunError::Cancelled)
+            ));
+        }
     }
 }

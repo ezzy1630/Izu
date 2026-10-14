@@ -220,6 +220,7 @@ impl Store {
     /// entries while holding a process-crash-released exclusive writer lease.
     pub fn recover(&self, cancel: &CancellationToken) -> Result<RecoveryReport> {
         let _lease = self.acquire_lock("temporary.lock", false, cancel)?;
+        self.recover_reclamation_locked(cancel)?;
         let head = crate::transaction::read_head_file(self, cancel)?;
         let verified = self.verify_at_head(head, cancel)?;
         // Publications also hold the shared temporary lease. The exclusive

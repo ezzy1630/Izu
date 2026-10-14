@@ -1,0 +1,60 @@
+name: Native boundary probes
+
+on:
+  push:
+    branches: ['candidate-ci-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-environment:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.artifacts/local/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.artifacts/local/rustup
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.artifacts/local/target
+      CARGO_BUILD_JOBS: 2
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Select project-local probe storage
+        shell: bash
+        run: |
+          probe_root="$GITHUB_WORKSPACE/.artifacts/local/native-probes"
+          mkdir -p "$probe_root/t"
+          printf 'TMPDIR=%s\n' "$probe_root/t" >> "$GITHUB_ENV"
+      - name: Record native actor, filesystem and controlled staging rename
+        shell: bash
+        run: python3 scripts/native-platform-probes.py rename
+      - name: Install pinned native toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Exercise the exact stage rename syscall boundary
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p izu-environment --locked stage_rename_permission_probe -- --nocapture 2>&1 | tee .artifacts/local/native-probes/environment-rename.log
+      - name: Exercise the exact environment CLI path
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p izu-cli --test subprocess --locked environment_cli_trust_materialization_and_bound_starting_checks_are_exact -- --exact --nocapture 2>&1 | tee .artifacts/local/native-probes/environment-cli.log
+      - name: Retain bounded owned fixture metadata
+        if: always()
+        run: python3 scripts/native-platform-probes.py metadata
+      - name: Retain macOS probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-probes-${{ matrix.os }}
+          path: |
+            .artifacts/local/native-probes/*.json
+            .artifacts/local/native-probes/*.log

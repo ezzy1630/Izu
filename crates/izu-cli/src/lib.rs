@@ -6,9 +6,10 @@ pub mod mcp;
 use clap::{Args, Parser, Subcommand};
 use izu_api::{
     Api, ApiError, Author, CancellationToken, CheckDefinition, ConflictResolution,
-    EnvironmentSharing, GitAuthentication, GitCommitter, GitImportRef, GitLocation, GitTransport,
-    HttpsLocation, LaunchArguments, MAX_REQUEST_BYTES, MutationContext, Operation, Outcome,
-    PathSelection, ReadContext, Request, Response, parse_request,
+    EnvironmentSharing, GitAuthentication, GitCommitter, GitImportRef, GitImportTag, GitLfsPolicy,
+    GitLocation, GitTransport, HttpsLocation, LaunchArguments, MAX_REQUEST_BYTES, MutationContext,
+    NativeTagInput, Operation, Outcome, PathSelection, ReadContext, Request, Response,
+    SshConfiguration, SshLocation, TagTargetInput, parse_request,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -122,6 +123,16 @@ pub enum Command {
     Refs {
         #[command(subcommand)]
         command: RefCommand,
+    },
+    /// List or conditionally update typed native tags.
+    Tags {
+        #[command(subcommand)]
+        command: TagCommand,
+    },
+    /// Inspect native format identity or explicitly migrate an exact HEAD.
+    Format {
+        #[command(subcommand)]
+        command: FormatCommand,
     },
     /// Restore selected files from an exact revision, preserving the prior source.
     Restore {
@@ -246,6 +257,11 @@ pub enum Command {
     Verify,
     /// Inspect recoverable interrupted native publication state.
     Recover,
+    /// Plan or explicitly discard exact unpublished objects; retain all history.
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
+    },
     /// Inspect, cancel, or explicitly acknowledge stopped managed jobs.
     Jobs {
         #[command(subcommand)]
@@ -357,6 +373,8 @@ impl OptionalAuthorArgs {
 pub struct LaunchArgs {
     #[arg(long, default_value_t = 300)]
     timeout_seconds: u64,
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=5000))]
+    cooperative_interrupt_ms: Option<u64>,
     #[arg(long = "env", value_parser = parse_env)]
     env: Vec<(String, String)>,
     #[arg(last = true, required = true, num_args = 1..)]
@@ -369,8 +387,25 @@ impl From<LaunchArgs> for LaunchArguments {
             argv: value.argv,
             env: value.env.into_iter().collect(),
             timeout_seconds: value.timeout_seconds,
+            cooperative_interrupt_ms: value.cooperative_interrupt_ms,
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StorageCommand {
+    /// Validate exact IDs without deleting anything. The plan is rechecked on reclaim.
+    Plan {
+        #[arg(required = true, num_args = 1..=4096)]
+        objects: Vec<String>,
+    },
+    /// Discard only this exact incoming-reference-free selection.
+    Reclaim {
+        #[arg(required = true, num_args = 1..=4096)]
+        objects: Vec<String>,
+        #[arg(long, required = true)]
+        discard_unpublished: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -547,9 +582,78 @@ pub enum RefCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum TagCommand {
+    List,
+    Set {
+        name: String,
+        #[arg(
+            long,
+            group = "tag_target",
+            required = true,
+            help = "Exact native revision ID"
+        )]
+        revision: Option<String>,
+        #[arg(long, group = "tag_target", required = true)]
+        tree: Option<String>,
+        #[arg(long, group = "tag_target", required = true)]
+        blob: Option<String>,
+        #[arg(long, group = "tag_expectation", required = true)]
+        expect_json: Option<PathBuf>,
+        #[arg(long, group = "tag_expectation", required = true)]
+        expect_absent: bool,
+    },
+    Delete {
+        name: String,
+        #[arg(long, required = true)]
+        expect_json: PathBuf,
+    },
+}
+#[derive(Debug, Subcommand)]
+pub enum FormatCommand {
+    Inspect,
+    Migrate {
+        #[arg(long, required = true)]
+        to: u32,
+        #[arg(long, required = true)]
+        expect_operation: String,
+    },
+}
+fn read_tag(path: &std::path::Path) -> Result<NativeTagInput, ApiError> {
+    serde_json::from_slice(&izu_api::read_input_file(path, MAX_REQUEST_BYTES)?)
+        .map_err(|error| ApiError::invalid(format!("Invalid exact tag expectation: {error}")))
+}
+fn read_git_tags(path: Option<PathBuf>) -> Result<Vec<GitImportTag>, ApiError> {
+    path.map(|path| {
+        serde_json::from_slice(&izu_api::read_input_file(&path, MAX_REQUEST_BYTES)?)
+            .map_err(|error| ApiError::invalid(format!("Invalid Git tag mappings: {error}")))
+    })
+    .transpose()
+    .map(|tags| tags.unwrap_or_default())
+}
+
+#[derive(Debug, Subcommand)]
 pub enum GitCommand {
+    /// Adopt and materialize the selected Git default branch into a new directory.
+    Clone {
+        source: PathBuf,
+        #[arg(
+            long,
+            help = "Bounded JSON array of exact tag mappings and expected records"
+        )]
+        tags_json: Option<PathBuf>,
+        destination: PathBuf,
+        #[command(flatten)]
+        reference: GitImportArgs,
+        #[command(flatten)]
+        transport: GitTransportArgs,
+    },
     Import {
         source: PathBuf,
+        #[arg(
+            long,
+            help = "Bounded JSON array of exact tag mappings and expected records"
+        )]
+        tags_json: Option<PathBuf>,
         #[command(flatten)]
         reference: GitImportArgs,
         #[command(flatten)]
@@ -557,11 +661,21 @@ pub enum GitCommand {
     },
     Export {
         target: PathBuf,
+        #[arg(
+            long,
+            help = "Preserve LFS pointer bytes; external LFS content is not uploaded"
+        )]
+        preserve_lfs_pointers: bool,
         #[command(flatten)]
         committer: GitCommitterArgs,
     },
     Fetch {
         source: PathBuf,
+        #[arg(
+            long,
+            help = "Bounded JSON array of exact tag mappings and expected records"
+        )]
+        tags_json: Option<PathBuf>,
         #[command(flatten)]
         reference: GitImportArgs,
         #[command(flatten)]
@@ -588,6 +702,17 @@ pub enum GitCommand {
 
 #[derive(Debug, Args)]
 pub struct GitTransportArgs {
+    #[arg(long, requires_all = ["ssh_identity", "ssh_known_hosts"], help = "Explicit absolute OpenSSH executable; ambient SSH configuration is disabled")]
+    ssh_tool: Option<PathBuf>,
+    #[arg(long, requires_all = ["ssh_tool", "ssh_known_hosts"])]
+    ssh_identity: Option<PathBuf>,
+    #[arg(long, requires_all = ["ssh_tool", "ssh_identity"])]
+    ssh_known_hosts: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Preserve LFS pointers only; external content is neither hydrated nor uploaded"
+    )]
+    preserve_lfs_pointers: bool,
     #[arg(
         long,
         requires = "https_token_env",
@@ -653,12 +778,35 @@ impl GitTransportArgs {
         Ok(GitTransport {
             authentication,
             root_certificates,
+            ssh: match (self.ssh_tool, self.ssh_identity, self.ssh_known_hosts) {
+                (Some(executable), Some(identity_file), Some(known_hosts_file)) => {
+                    Some(SshConfiguration {
+                        executable,
+                        identity_file,
+                        known_hosts_file,
+                    })
+                }
+                (None, None, None) => None,
+                _ => {
+                    return Err(ApiError::invalid(
+                        "Provide --ssh-tool, --ssh-identity and --ssh-known-hosts together",
+                    ));
+                }
+            },
+            lfs_policy: if self.preserve_lfs_pointers {
+                GitLfsPolicy::PreservePointers
+            } else {
+                GitLfsPolicy::Reject
+            },
         })
     }
 }
 
 fn git_location(path: PathBuf) -> Result<GitLocation, ApiError> {
     match path.to_str() {
+        Some(url) if url.starts_with("ssh://") => Ok(GitLocation::Ssh(SshLocation {
+            ssh_url: url.to_owned(),
+        })),
         Some(url) if url.starts_with("https://") => Ok(GitLocation::Https(HttpsLocation {
             url: url.to_owned(),
         })),
@@ -950,6 +1098,61 @@ impl Cli {
                 expected: Some(expect),
                 revision: None,
             }),
+            Command::Tags {
+                command: TagCommand::List,
+            } => Ok(Operation::TagList { context: read }),
+            Command::Tags {
+                command:
+                    TagCommand::Set {
+                        name,
+                        revision,
+                        tree,
+                        blob,
+                        expect_json,
+                        ..
+                    },
+            } => {
+                let target = if let Some(revision) = revision {
+                    TagTargetInput::Revision { revision }
+                } else if let Some(tree) = tree {
+                    TagTargetInput::Tree { tree }
+                } else if let Some(blob) = blob {
+                    TagTargetInput::Blob { blob }
+                } else {
+                    return Err(ApiError::invalid("Select one exact tag target"));
+                };
+                Ok(Operation::TagSet {
+                    context: read,
+                    name,
+                    expected: expect_json.as_deref().map(read_tag).transpose()?,
+                    tag: Some(NativeTagInput {
+                        target,
+                        origin: None,
+                    }),
+                })
+            }
+            Command::Tags {
+                command: TagCommand::Delete { name, expect_json },
+            } => Ok(Operation::TagSet {
+                context: read,
+                name,
+                expected: Some(read_tag(&expect_json)?),
+                tag: None,
+            }),
+            Command::Format {
+                command: FormatCommand::Inspect,
+            } => Ok(Operation::MetadataInspect { context: read }),
+            Command::Format {
+                command:
+                    FormatCommand::Migrate {
+                        to,
+                        expect_operation,
+                    },
+            } => Ok(Operation::MetadataMigrate {
+                context: read,
+                version: to,
+                expected_operation: expect_operation,
+            }),
             Command::Restore {
                 revision,
                 selection,
@@ -1120,6 +1323,26 @@ impl Cli {
             },
             Command::Verify => Ok(Operation::Verify { context: read }),
             Command::Recover => Ok(Operation::Recover { context: read }),
+            Command::Storage { command } => match command {
+                StorageCommand::Plan { objects } => Ok(Operation::StoragePlan {
+                    context: read,
+                    objects,
+                }),
+                StorageCommand::Reclaim {
+                    objects,
+                    discard_unpublished,
+                } => {
+                    if !discard_unpublished {
+                        return Err(ApiError::invalid(
+                            "Reclamation requires --discard-unpublished",
+                        ));
+                    }
+                    Ok(Operation::StorageReclaim {
+                        context: read,
+                        objects,
+                    })
+                }
+            },
             Command::Jobs { command } => match command {
                 JobCommand::List { limit } => Ok(Operation::JobsList {
                     context: read,
@@ -1234,33 +1457,59 @@ impl Cli {
             }),
             Command::Git {
                 command:
-                    GitCommand::Import {
+                    GitCommand::Clone {
                         source,
+                        tags_json,
+                        destination,
                         reference,
                         transport,
                     },
-            } => Ok(Operation::GitImport {
-                context: read,
+            } => Ok(Operation::GitClone {
+                destination,
+                tags: read_git_tags(tags_json)?,
                 source: git_location(source)?,
                 refs: reference.into_refs()?,
                 transport: transport.read()?,
             }),
             Command::Git {
-                command: GitCommand::Export { target, committer },
+                command:
+                    GitCommand::Import {
+                        source,
+                        tags_json,
+                        reference,
+                        transport,
+                    },
+            } => Ok(Operation::GitImport {
+                context: read,
+                tags: read_git_tags(tags_json)?,
+                source: git_location(source)?,
+                refs: reference.into_refs()?,
+                transport: transport.read()?,
+            }),
+            Command::Git {
+                command:
+                    GitCommand::Export {
+                        target,
+                        committer,
+                        preserve_lfs_pointers,
+                    },
             } => Ok(Operation::GitExport {
                 context: read,
                 target,
                 committer: committer.into_committer()?,
+                preserve_lfs_pointers,
             }),
             Command::Git {
                 command:
                     GitCommand::Fetch {
                         source,
+                        tags_json,
                         reference,
                         transport,
                     },
             } => Ok(Operation::GitFetch {
                 context: read,
+                tags: read_git_tags(tags_json)?,
                 source: git_location(source)?,
                 refs: reference.into_refs()?,
                 transport: transport.read()?,

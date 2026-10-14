@@ -286,3 +286,31 @@ keys use fallible reserve. Standard-library and normalization internal allocatio
 limits remain as described in the format contract. These are general Unicode
 utilities, not a VCS engine. Version assertions protect the namespace policy from
 a silent dependency-data change.
+
+## Metadata versions and native tags
+
+Object framing remains `IZUOBJ1`. Omission of `RepositoryView.metadata_version`
+means the original v1 metadata schema. Existing v1 bytes and object IDs are not
+rewritten. New repositories explicitly use `metadata_version: "v2"`; old
+binaries reject this extension rather than silently discarding tag records.
+`izu format inspect` reports the exact current operation and metadata version.
+After preserving a native bundle, `izu format migrate --to 2 --expect-operation ID`
+appends one HEAD-leased operation whose parent is the unchanged v1 operation.
+There is no automatic migration or downgrade. Old operations remain readable.
+Native bundle envelope v1 can carry either supported metadata schema; readers
+which only understand v1 metadata reject v2 closures before destination adoption.
+
+Tags occupy a separate namespace from branch references. A tag targets a typed
+revision, tree or blob. Optional Git origin retains the ultimate Git object ID
+and outermost-first original annotation blobs. These are ordinary native
+reachability edges, protected by verification, bundles and reclamation.
+`import_history` checks branch and exact-value tag leases together and publishes
+all changes in one engine operation. A stale tag rejects that whole update.
+
+Use `izu tags list`, `izu tags set NAME --revision ID --expect-absent` or the
+`--tree` / `--blob` alternatives. Replacement and deletion require the exact tag
+record from the list saved in a bounded JSON file with `--expect-json PATH`.
+`tag:NAME` resolves revision tags for revision selection. Annotated Git signatures
+are preserved as opaque original bytes; preservation does not verify signatures.
+Changing a tag target requires a new tag record and cannot retain the old signed
+annotation as a valid signature of rewritten content.

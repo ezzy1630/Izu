@@ -244,18 +244,29 @@ impl ObjectBatch<'_> {
                 .ensure_dir(prefix)
                 .map_err(|error| io_error("create batch object shard", error))?;
             self.submission.check_file(shard.file())?;
-            match self
-                .store
-                .temporary
-                .hard_link(prepared.temporary.name()?, &shard, suffix)
-            {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(io_error("publish batch immutable object", error)),
-            }
-            let mut actual = shard
-                .open_read(suffix)
-                .map_err(|error| io_error("open batch immutable object", error))?;
+            // Existing immutable objects are common during unchanged capture.
+            // Open and verify them directly; a missing name still uses a
+            // no-overwrite link so a concurrent publisher cannot be replaced.
+            let mut actual = match shard.open_read(suffix) {
+                Ok(actual) => actual,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    match self
+                        .store
+                        .temporary
+                        .hard_link(prepared.temporary.name()?, &shard, suffix)
+                    {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                        Err(error) => {
+                            return Err(io_error("publish batch immutable object", error));
+                        }
+                    }
+                    shard
+                        .open_read(suffix)
+                        .map_err(|error| io_error("open batch immutable object", error))?
+                }
+                Err(error) => return Err(io_error("open batch immutable object", error)),
+            };
             self.store.verify_duplicate(
                 &mut actual,
                 &mut file,

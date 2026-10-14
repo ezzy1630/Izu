@@ -45,6 +45,7 @@ impl Api {
             return Ok(context);
         };
         let repo = repository(&context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         let state = named_workspace(&repo, name, cancel)?.ok_or_else(|| ApiError {
             code: ErrorCode::NotFound,
             message: format!("No open change named {name}"),
@@ -67,6 +68,7 @@ impl Api {
         cancel: &CancellationToken,
     ) -> Result<String, ApiError> {
         let repo = repository(context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         resolve(&repo, context, selector, cancel).map(|id| id.to_string())
     }
 
@@ -80,6 +82,7 @@ impl Api {
     ) -> Result<Operation, ApiError> {
         let exact = self.mutation_context(context, cancel)?;
         let repo = repository(context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         let state = repo
             .workspace(parse(&exact.workspace, "workspace")?, cancel)
             .map_err(engine_error)?;
@@ -103,6 +106,7 @@ impl Api {
     ) -> Result<Operation, ApiError> {
         validate_launch(&launch)?;
         let repo = repository(context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         let target = match named_workspace(&repo, &name, cancel)? {
             Some(state) => {
                 require_private(&repo, &state)?;
@@ -168,6 +172,7 @@ impl Api {
     ) -> Result<Operation, ApiError> {
         let exact = self.mutation_context(context, cancel)?;
         let repo = repository(context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         let state = repo
             .workspace(parse(&exact.workspace, "workspace")?, cancel)
             .map_err(engine_error)?;
@@ -190,6 +195,7 @@ impl Api {
     ) -> Result<Operation, ApiError> {
         validate_launch(&launch)?;
         let repo = repository(context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         let state = repo
             .workspace(selected_workspace(&repo, context)?, cancel)
             .map_err(engine_error)?;
@@ -214,6 +220,7 @@ impl Api {
             timeout_seconds,
         } = plan;
         let repo = repository(context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         let source = match source {
             Some(selector) => resolve(&repo, context, selector, cancel)?,
             None => {
@@ -268,6 +275,7 @@ impl Api {
                 from,
             } => {
                 let repo = repository(&context)?;
+                let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
                 let from = parse(&from, "from revision")?;
                 let runtime = izu_runtime::Runtime::open(
                     repo.metadata_path().join("runtime"),
@@ -348,6 +356,11 @@ impl Api {
             let mut request = izu_runtime::RunRequest::new(binding, launch.argv)
                 .with_timeout(Duration::from_secs(launch.timeout_seconds))
                 .map_err(runtime_error)?;
+            request.cooperative_interrupt = launch
+                .cooperative_interrupt_ms
+                .map(izu_runtime::CooperativeInterrupt::from_millis)
+                .transpose()
+                .map_err(runtime_error)?;
             request.env_overlay = launch.env;
             // Source preparation is bounded separately; commands retain the
             // ordinary shared running-job reservations throughout execution.
@@ -417,6 +430,7 @@ impl Api {
         }
         let checks = parse_checks(checks)?;
         let repo = repository(&context)?;
+        let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
         let prepared = repo
             .prepare_merge(
                 RefName::new(target.name).map_err(model_error)?,
@@ -557,6 +571,11 @@ fn resolve(
 
 fn validate_launch(launch: &LaunchArguments) -> Result<(), ApiError> {
     timeout(launch.timeout_seconds)?;
+    launch
+        .cooperative_interrupt_ms
+        .map(izu_runtime::CooperativeInterrupt::from_millis)
+        .transpose()
+        .map_err(runtime_error)?;
     if launch.argv.is_empty() || launch.argv.len() > 4096 || launch.argv[0].is_empty() {
         return Err(ApiError::invalid(
             "A managed launch requires an executable and at most 4096 arguments",
@@ -748,7 +767,7 @@ pub(super) fn environment_error(error: izu_environment::EnvironmentError) -> Api
     };
     let code = match &error {
         E::Cancelled => ErrorCode::Cancelled,
-        E::Io { source, .. } | E::LockIo { source, .. }
+        E::Io { source, .. } | E::LockIo { source, .. } | E::StageRenameIo { source, .. }
             if source.kind() == std::io::ErrorKind::Unsupported =>
         {
             ErrorCode::UnsupportedFeature
@@ -792,7 +811,7 @@ mod source_admission_tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/tmp");
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/local/tmp");
             std::fs::create_dir_all(&path).unwrap();
             let temporary = tempfile::tempdir_in(path).unwrap();
             let source = temporary.path().join("source");
@@ -878,6 +897,7 @@ mod source_admission_tests {
                 argv: vec!["/usr/bin/true".into()],
                 env: BTreeMap::new(),
                 timeout_seconds: 120,
+                cooperative_interrupt_ms: None,
             },
             &cancel,
             runtime,
@@ -1058,6 +1078,7 @@ mod source_admission_tests {
                 argv: vec!["/usr/bin/true".into()],
                 env: BTreeMap::new(),
                 timeout_seconds: 120,
+                cooperative_interrupt_ms: None,
             },
             &fixture.cancel,
         );
@@ -1087,7 +1108,8 @@ mod source_admission_tests {
 
     #[test]
     fn managed_new_and_resume_wait_without_publishing_and_cancel_before_preparation() {
-        let temporary_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/tmp");
+        let temporary_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/local/tmp");
         std::fs::create_dir_all(&temporary_root).unwrap();
         let temporary = tempfile::tempdir_in(temporary_root).unwrap();
         let source = temporary.path().join("source");
@@ -1137,6 +1159,7 @@ mod source_admission_tests {
                             argv: vec!["/usr/bin/true".into()],
                             env: BTreeMap::new(),
                             timeout_seconds: 120,
+                            cooperative_interrupt_ms: None,
                         },
                         &token,
                     );

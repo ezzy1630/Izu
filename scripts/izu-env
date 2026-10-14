@@ -17,7 +17,23 @@ unset RUSTC RUSTDOC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 export CARGO_HOME="$IZU_LOCAL/tools/cargo"
 export RUSTUP_HOME="$IZU_LOCAL/tools/rustup"
 export CARGO_BUILD_JOBS=2
-export CARGO_TARGET_DIR="$(pwd -P)/target-izu-internal"
+# Qualifying checks can require an empty target. Keep the explicit recorder
+# target project-local; ordinary development still uses the checkout cache.
+if [ -n "${IZU_VERIFICATION_TARGET_DIR:-}" ]; then
+    IZU_CHECKED_TARGET=$(python3 -B - "$IZU_LOCAL" "$IZU_VERIFICATION_TARGET_DIR" <<'PY_TARGET'
+from pathlib import Path
+import sys
+base=Path(sys.argv[1]).resolve(strict=True)
+target=Path(sys.argv[2]).resolve(strict=True)
+if not target.is_relative_to(base):
+    raise ValueError('verification target must be inside project .artifacts/local')
+print(target)
+PY_TARGET
+    )
+    export CARGO_TARGET_DIR="$IZU_CHECKED_TARGET"
+else
+    export CARGO_TARGET_DIR="$(pwd -P)/.artifacts/local/target-izu-internal"
+fi
 export CARGO_TERM_COLOR=never
 export TMPDIR="$IZU_LOCAL/tmp-root"
 export PYTHONDONTWRITEBYTECODE=1

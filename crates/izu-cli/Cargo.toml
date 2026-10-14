@@ -18,6 +18,10 @@ signal-hook = "=0.4.4"
 rustix = { workspace = true, features = ["event", "fs"] }
 
 [dev-dependencies]
+izu-model.workspace = true
+izu-process.workspace = true
+izu-store.workspace = true
+izu-engine = { path = "../izu-engine" }
 tempfile.workspace = true
 
 [[bin]]

@@ -1,8 +1,9 @@
 #![cfg(unix)]
 
 use std::fs;
+use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use izu_engine::{Repository, RepositoryOptions, Selection, WorkspaceState};
@@ -113,9 +114,15 @@ impl Drop for Fixture {
     }
 }
 fn owned_tempdir() -> tempfile::TempDir {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/tmp");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/local/tmp");
     fs::create_dir_all(&path).unwrap();
     tempfile::tempdir_in(path).unwrap()
+}
+// Readers use existence as a readiness signal, so publish only complete bytes.
+fn publish_ready(path: &Path, bytes: &[u8]) {
+    let mut pending = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+    pending.write_all(bytes).unwrap();
+    pending.persist(path).unwrap();
 }
 fn shell(binding: WorkspaceBinding, script: &str) -> RunRequest {
     RunRequest::new(binding, vec!["/bin/sh".into(), "-c".into(), script.into()])
@@ -578,11 +585,10 @@ fn crash_driver_process() {
     );
     let job = runtime.submit(request).unwrap();
     runtime.poll().unwrap();
-    fs::write(
-        base.join("driver-ready.json"),
-        serde_json::to_vec(&runtime.status(&job).unwrap()).unwrap(),
-    )
-    .unwrap();
+    publish_ready(
+        &base.join("driver-ready.json"),
+        &serde_json::to_vec(&runtime.status(&job).unwrap()).unwrap(),
+    );
     loop {
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -854,7 +860,7 @@ fn dropping_after_registry_and_source_substitution_keeps_exact_writer_intent() {
         vec![
             "/usr/bin/python3".into(),
             "-c".into(),
-            "import time; open('ready','w').write('original pinned source'); time.sleep(30)".into(),
+            "import os,pathlib,time; pathlib.Path('ready-pending').write_text('original pinned source'); os.rename('ready-pending','ready'); time.sleep(30)".into(),
         ],
     );
     let id = runtime.submit(request).unwrap();
@@ -2409,11 +2415,10 @@ fn starting_before_token_driver_process() {
     let lease = repository
         .lease_workspace(id, workspace.expected, &cancel)
         .unwrap();
-    fs::write(
-        base.join("starting-ready.json"),
-        serde_json::to_vec(&(job, lease.intent().token.clone())).unwrap(),
-    )
-    .unwrap();
+    publish_ready(
+        &base.join("starting-ready.json"),
+        &serde_json::to_vec(&(job, lease.intent().token.clone())).unwrap(),
+    );
     // No runtime token publication, worker spawn or release handshake occurs.
     loop {
         std::thread::sleep(Duration::from_secs(1));
@@ -2452,4 +2457,224 @@ fn failed_first_launch_does_not_strand_other_admitted_workspace() {
     assert!(passed(&runtime.wait(&second_id, &fixture.cancel).unwrap()));
     assert!(passed(&runtime.wait(&first_id, &fixture.cancel).unwrap()));
     assert_eq!(runtime.usage().unwrap().running_jobs, 0);
+}
+
+#[test]
+fn cooperative_interrupt_cleans_detached_child_on_cancel_and_deadline() {
+    let mut unrelated = std::process::Command::new("/bin/sleep")
+        .arg("10")
+        .spawn()
+        .unwrap();
+    for deadline in [false, true] {
+        let fixture = Fixture::new();
+        let workspace = fixture.workspace("cooperative");
+        let root = PathBuf::from(&workspace.record.root);
+        let mut runtime = fixture.runtime();
+        let script = r#"import signal, subprocess, sys, time
+child = subprocess.Popen([sys.executable, '-c', "import time; f=open('heartbeat','a'); end=time.monotonic()+10\nwhile time.monotonic()<end: f.write('x'); f.flush(); time.sleep(.01)"], start_new_session=True)
+def stop(signum, frame):
+    child.terminate()
+    child.wait(timeout=2)
+    open('cleanup-ack','w').write('reaped')
+    sys.exit(130)
+signal.signal(signal.SIGINT, stop)
+open('ready','w').write('ready')
+time.sleep(10)
+"#;
+        let mut request = RunRequest::new(
+            fixture.binding(&workspace),
+            vec!["/usr/bin/python3".into(), "-c".into(), script.into()],
+        );
+        request.cooperative_interrupt = Some(CooperativeInterrupt::from_millis(1000).unwrap());
+        if deadline {
+            request = request.with_timeout(Duration::from_millis(500)).unwrap();
+        }
+        let id = runtime.submit(request).unwrap();
+        runtime.poll().unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !root.join("ready").exists() || !root.join("heartbeat").exists() {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if deadline {
+            // Do not poll: the worker itself must initiate the deadline handoff.
+            std::thread::sleep(Duration::from_millis(650));
+        }
+        let job = if deadline {
+            runtime.wait(&id, &fixture.cancel).unwrap()
+        } else {
+            runtime.cancel(&id).unwrap()
+        };
+        assert!(
+            matches!(
+                job.state,
+                JobState::Cancelled {
+                    reason: CancellationReason::Deadline,
+                    ..
+                }
+            ) == deadline,
+            "{:?}",
+            job.state
+        );
+        assert!(
+            matches!(job.state, JobState::Cancelled { .. }),
+            "{:?}",
+            job.state
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("cleanup-ack")).unwrap(),
+            "reaped"
+        );
+        let stopped = fs::metadata(root.join("heartbeat")).unwrap().len();
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(fs::metadata(root.join("heartbeat")).unwrap().len(), stopped);
+        assert!(
+            fixture
+                .repository
+                .writer_intent(workspace.id, &fixture.cancel)
+                .unwrap()
+                .is_none()
+        );
+        assert!(unrelated.try_wait().unwrap().is_none());
+    }
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
+}
+
+#[test]
+fn ignored_cooperative_interrupt_preserves_intent_and_reopen_never_signals_saved_pid() {
+    for deadline in [false, true] {
+        let fixture = Fixture::new();
+        let workspace = fixture.workspace("ignores");
+        let root = PathBuf::from(&workspace.record.root);
+        let mut runtime = fixture.runtime();
+        let mut request = RunRequest::new(fixture.binding(&workspace), vec!["/usr/bin/python3".into(), "-c".into(), "import signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); f=open('heartbeat','a'); open('ready','w').write('ready'); end=time.monotonic()+10;\nwhile time.monotonic()<end: f.write('x'); f.flush(); time.sleep(.01)".into()]);
+        request.cooperative_interrupt = Some(CooperativeInterrupt::from_millis(100).unwrap());
+        if deadline {
+            request = request.with_timeout(Duration::from_millis(300)).unwrap();
+        }
+        let id = runtime.submit(request).unwrap();
+        runtime.poll().unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !root.join("ready").exists() {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let token = runtime.status(&id).unwrap().writer_intent.unwrap();
+        if deadline {
+            // Do not poll: the worker itself must initiate the deadline handoff.
+            std::thread::sleep(Duration::from_millis(650));
+            let stopped = fs::metadata(root.join("heartbeat")).unwrap().len();
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(fs::metadata(root.join("heartbeat")).unwrap().len(), stopped);
+        }
+        let job = if deadline {
+            runtime.wait(&id, &fixture.cancel).unwrap()
+        } else {
+            runtime.cancel(&id).unwrap()
+        };
+        assert!(
+            matches!(job.state, JobState::OwnershipUnknown { .. }),
+            "{:?}",
+            job.state
+        );
+        assert_eq!(
+            fixture
+                .repository
+                .writer_intent(workspace.id, &fixture.cancel)
+                .unwrap()
+                .unwrap()
+                .token,
+            token
+        );
+        drop(runtime);
+        let mut reopened = fixture.runtime();
+        assert!(matches!(
+            reopened.cancel(&id),
+            Err(RuntimeError::UnsafeClose(_))
+        ));
+        assert_eq!(
+            fixture
+                .repository
+                .writer_intent(workspace.id, &fixture.cancel)
+                .unwrap()
+                .unwrap()
+                .token,
+            token
+        );
+    }
+}
+
+#[test]
+fn cooperative_completed_result_wins_late_cancellation() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("completed");
+    let mut runtime = fixture.runtime();
+    let mut request = shell(fixture.binding(&workspace), "printf 'done' > result.txt");
+    request.cooperative_interrupt = Some(CooperativeInterrupt::from_millis(100).unwrap());
+    let id = runtime.submit(request).unwrap();
+    runtime.poll().unwrap();
+    let report = fixture
+        .repository
+        .metadata_path()
+        .join("runtime/jobs")
+        .join(id.as_str())
+        .join("result.json");
+    let until = Instant::now() + Duration::from_secs(5);
+    while !report.exists() {
+        assert!(Instant::now() < until, "{}", report.display());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(passed(&runtime.cancel(&id).unwrap()));
+}
+
+#[test]
+fn cooperative_worker_deadline_wins_a_late_requested_cancel() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("deadline-race");
+    let mut runtime = fixture.runtime();
+    let mut request = RunRequest::new(fixture.binding(&workspace), vec![
+        "/usr/bin/python3".into(), "-c".into(),
+        "import signal,sys,time; signal.signal(signal.SIGINT,lambda *_:sys.exit(130)); time.sleep(10)".into(),
+    ]).with_timeout(Duration::from_millis(300)).unwrap();
+    request.cooperative_interrupt = Some(CooperativeInterrupt::from_millis(1000).unwrap());
+    let id = runtime.submit(request).unwrap();
+    runtime.poll().unwrap();
+    let report = fixture
+        .repository
+        .metadata_path()
+        .join("runtime/jobs")
+        .join(id.as_str())
+        .join("result.json");
+    let until = Instant::now() + Duration::from_secs(5);
+    while !report.exists() {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(matches!(
+        runtime.cancel(&id).unwrap().state,
+        JobState::Cancelled {
+            reason: CancellationReason::Deadline,
+            ..
+        }
+    ));
+    drop(runtime);
+    let state = fixture
+        .repository
+        .metadata_path()
+        .join("runtime/state.json");
+    let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
+    assert_eq!(
+        saved["required_features"],
+        serde_json::json!(["cooperative_interrupt_v1"])
+    );
+    saved.as_object_mut().unwrap().remove("required_features");
+    fs::write(state, serde_json::to_vec(&saved).unwrap()).unwrap();
+    assert!(
+        Runtime::open(
+            fixture.repository.metadata_path().join("runtime"),
+            fixture.config()
+        )
+        .is_err()
+    );
 }

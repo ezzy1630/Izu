@@ -15,10 +15,20 @@ use crate::{
 
 pub(crate) const FORMAT_VERSION: u32 = 1;
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RegistryFeature {
+    CooperativeInterruptV1,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RegistryState {
     pub format_version: u32,
+    // V1 readers reject this top-level extension instead of silently dropping
+    // cancellation policy from nested command summaries during shared writes.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub required_features: BTreeSet<RegistryFeature>,
     pub next_sequence: u64,
     #[serde(default)]
     pub budget: Option<ResourceBudget>,
@@ -31,6 +41,7 @@ impl Default for RegistryState {
     fn default() -> Self {
         Self {
             format_version: FORMAT_VERSION,
+            required_features: BTreeSet::new(),
             next_sequence: 0,
             budget: None,
             jobs: BTreeMap::new(),
@@ -472,6 +483,15 @@ fn validate_state(state: &RegistryState, config: &RuntimeConfig) -> Result<(), R
         }
     }
     for (id, job) in &state.jobs {
+        if job.request.cooperative_interrupt.is_some()
+            && !state
+                .required_features
+                .contains(&RegistryFeature::CooperativeInterruptV1)
+        {
+            return Err(RuntimeError::Invalid(
+                "cooperative job requires the versioned registry feature".into(),
+            ));
+        }
         if id != &job.id
             || !sequences.insert(job.sequence)
             || job.sequence >= state.next_sequence
@@ -494,6 +514,7 @@ fn validate_state(state: &RegistryState, config: &RuntimeConfig) -> Result<(), R
             resources: job.request.resources.clone(),
             timeout_ms: job.request.timeout_ms,
             environment_binding: job.request.environment_binding,
+            cooperative_interrupt: job.request.cooperative_interrupt,
         };
         crate::scheduler::validate_request(&request, config)?;
         if job.starting_environment.as_ref().is_some_and(|receipt| {
@@ -671,10 +692,49 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     fn owned_tempdir() -> tempfile::TempDir {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/tmp");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/local/tmp");
         std::fs::create_dir_all(&path).unwrap();
         tempfile::tempdir_in(path).unwrap()
     }
+    #[test]
+    fn cooperative_feature_is_explicit_and_old_readers_refuse_it() {
+        #[derive(Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyRegistry {
+            format_version: u32,
+            next_sequence: u64,
+            budget: Option<ResourceBudget>,
+            jobs: BTreeMap<JobId, JobSnapshot>,
+            workspaces: Vec<WorkspaceBinding>,
+            closed_workspaces: BTreeSet<izu_model::WorkspaceId>,
+        }
+        let mut state = RegistryState::default();
+        let original = serde_json::to_value(&state).unwrap();
+        let legacy: LegacyRegistry = serde_json::from_value(original.clone()).unwrap();
+        assert_eq!(serde_json::to_value(legacy).unwrap(), original);
+        state
+            .required_features
+            .insert(RegistryFeature::CooperativeInterruptV1);
+        let extended = serde_json::to_value(&state).unwrap();
+        assert!(serde_json::from_value::<LegacyRegistry>(extended.clone()).is_err());
+        let reopened: RegistryState = serde_json::from_value(extended).unwrap();
+        assert_eq!(state.required_features, reopened.required_features);
+        let mut unknown = original;
+        unknown["required_features"] = serde_json::json!(["future_feature"]);
+        assert!(serde_json::from_value::<RegistryState>(unknown).is_err());
+        for value in [0, 5001, u64::MAX] {
+            assert!(
+                serde_json::from_value::<crate::CooperativeInterrupt>(serde_json::json!(value))
+                    .is_err()
+            );
+        }
+        for value in [1, 5000] {
+            let policy: crate::CooperativeInterrupt =
+                serde_json::from_value(serde_json::json!(value)).unwrap();
+            assert_eq!(u64::from(policy), value);
+        }
+    }
+
     #[test]
     fn fifo_is_rejected_without_waiting_for_a_writer() {
         let fixture = owned_tempdir();

@@ -1,4 +1,4 @@
-# izu native format, version 1
+# izu native format: frame v1, metadata v1/v2
 
 This is an original format. It does not serialize Rust memory layout, enum
 discriminant layout, pointers, platform endianness, or another VCS engine's
@@ -22,7 +22,7 @@ length are part of identity. `RevisionId`, `TreeId`, `OperationId`, `CandidateId
 and `EvidenceId` are distinct typed IDs; merely wrapping a hash does not prove
 object existence or kind. Loading verifies both hash and expected kind.
 
-The magic selects frame version 1 and all five metadata schemas below. Unknown
+The magic selects frame version 1. Explicit metadata evolution is described below. Unknown
 magic/version/kind is rejected before any payload allocation or publication.
 Total length `17 + count` must fit in `u64`. Blob length is streamed; it is never
 converted to `usize` to allocate one buffer. Metadata length is bounded first,
@@ -41,7 +41,7 @@ need its own reviewed protocol and fresh acknowledgment.
 ## Canonical metadata JSON
 
 Blobs contain arbitrary bytes, including empty data and non-UTF-8. All other
-kinds contain exactly one canonical UTF-8 JSON object matching their version-1
+kinds contain exactly one canonical UTF-8 JSON object matching their supported
 record schema. Canonical bytes are defined independently of a JSON library:
 
 1. There is no BOM, insignificant whitespace, trailing newline or trailing data.
@@ -70,6 +70,30 @@ Object-key order is independent of Rust struct declaration order or JSON map
 features. Timestamps are signed Unix milliseconds; names/descriptions remain
 UTF-8. Times are data, not a substitute for ancestry or concurrent publication
 order.
+
+## Explicit metadata evolution
+
+Object frame v1 and native bundle envelope v1 are independent from operation
+metadata schema evolution. The original repository view omits both
+`metadata_version` and `tags`, preserving exact v1 bytes and IDs. New repositories
+use `"metadata_version":"v2"`. Nonempty `tags` is allowed only in v2; an empty
+`tags` map is omitted canonically. Explicit null version or empty tag fields
+are rejected by the canonical re-encoding check. Other v1 fields retain their
+original presence rules. Unknown versions and fields fail decoding.
+
+`izu format inspect` reports the current operation and schema. Before upgrading
+an existing v1 repository, preserve a native bundle and its compatible reader.
+`izu format migrate --to 2 --expect-operation ID` publishes one durable operation
+whose parent is the exact supplied v1 HEAD. A stale HEAD rejects migration; old
+operation bytes and IDs remain unchanged. Migration is explicit, with no
+automatic downgrade. An old v1 reader refuses the new view; do not alternate old
+and new writers on a migrated repository. Restore a preserved pre-migration
+bundle into a new directory when an old reader is required.
+
+V2 tag targets are typed revision/tree/blob IDs. Optional Git annotation origin
+retains ultimate SHA-1 and ordered raw annotation blobs. Verification, bundles
+and reclamation follow these native edges. See [engine contract](engine-contract.md)
+for field and migration invariants.
 
 ## Version-1 schemas
 

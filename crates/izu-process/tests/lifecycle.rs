@@ -8,7 +8,7 @@ use std::{
     os::unix::ffi::OsStringExt,
     path::PathBuf,
     process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::Ordering,
     thread,
     time::{Duration, Instant},
 };
@@ -80,26 +80,70 @@ fn escaped_pipe_writer_never_blocks_completion_and_is_reported() {
     assert!(r.stdout.bytes.windows(7).any(|x| x == b"escaped"));
     thread::sleep(Duration::from_secs(1));
 }
+// Admission and target startup have their own existing five-second bound.
+// This check measures a separate thirty-millisecond deadline only once the
+// exact owned child has demonstrably started; it does not reset run's budget.
 #[test]
-fn timeout_and_mid_run_cancellation_stop_owned_groups() {
-    let mut o = opts();
-    o.timeout = Duration::from_millis(30);
-    let r = run(&command("hold"), b"", &o, &worker(), &|| false).unwrap();
-    assert_eq!(r.termination, Termination::TimedOut);
+fn postlaunch_thirty_millisecond_deadline_stops_only_the_owned_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat = dir.path().join("heartbeat");
+    let mut other = Command::new(env!("CARGO_BIN_EXE_izu-process-test-child"));
+    other.arg("hold");
+    let mut other =
+        OwnedProcess::spawn_until(&mut other, Instant::now() + opts().timeout, &|| false).unwrap();
+    let mut target = Command::new(env!("CARGO_BIN_EXE_izu-process-test-child"));
+    target.arg("heartbeat-hold").arg(&heartbeat);
+    let mut target =
+        OwnedProcess::spawn_until(&mut target, Instant::now() + opts().timeout, &|| false).unwrap();
+    let ready_deadline = Instant::now() + opts().timeout;
+    while !std::fs::metadata(&heartbeat).is_ok_and(|m| m.len() > 0) {
+        assert!(Instant::now() < ready_deadline, "owned child readiness");
+        thread::sleep(Duration::from_millis(1));
+    }
+    let pid = rustix::process::Pid::from_raw(i32::try_from(target.id()).unwrap()).unwrap();
+    assert_eq!(rustix::process::getpgid(Some(pid)).unwrap(), pid);
+    let deadline = Instant::now() + Duration::from_millis(30);
+    while Instant::now() < deadline {
+        assert!(!target.observe_exit().unwrap());
+        thread::sleep(Duration::from_millis(1));
+    }
+    let report = target.stop(opts().cleanup_timeout);
+    assert!(report.cooperative_stop_succeeded());
+    assert_eq!(
+        rustix::process::test_kill_process_group(pid),
+        Err(rustix::io::Errno::SRCH)
+    );
+    assert!(
+        !other.observe_exit().unwrap(),
+        "unrelated owned child remains alive"
+    );
+    let stopped = std::fs::metadata(&heartbeat).unwrap().len();
+    thread::sleep(Duration::from_millis(30));
+    assert_eq!(std::fs::metadata(&heartbeat).unwrap().len(), stopped);
+    assert!(
+        other
+            .stop(opts().cleanup_timeout)
+            .cooperative_stop_succeeded()
+    );
+}
+
+#[test]
+fn mid_run_cancellation_after_target_readiness_stops_owned_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat = dir.path().join("heartbeat");
+    let mut spec = command("heartbeat-hold");
+    spec.arg(&heartbeat);
+    let r = run(&spec, b"", &opts(), &worker(), &|| {
+        std::fs::metadata(&heartbeat).is_ok_and(|m| m.len() > 0)
+    })
+    .unwrap();
+    assert_eq!(r.termination, Termination::Cancelled);
     assert!(r.cleanup.cooperative_stop_succeeded());
-    let cancelled = AtomicBool::new(false);
-    thread::scope(|scope| {
-        scope.spawn(|| {
-            thread::sleep(Duration::from_millis(30));
-            cancelled.store(true, Ordering::Relaxed);
-        });
-        let r = run(&command("hold"), b"", &opts(), &worker(), &|| {
-            cancelled.load(Ordering::Relaxed)
-        })
-        .unwrap();
-        assert_eq!(r.termination, Termination::Cancelled);
-        assert!(r.cleanup.cooperative_stop_succeeded());
-    });
+    assert!(r.stdout.eof && r.stderr.eof);
+    let stopped = std::fs::metadata(&heartbeat).unwrap().len();
+    assert!(stopped > 0, "target started before cancellation");
+    thread::sleep(Duration::from_millis(30));
+    assert_eq!(std::fs::metadata(&heartbeat).unwrap().len(), stopped);
 }
 #[test]
 fn prelaunch_cancel_limits_and_spawn_failure_are_typed() {
@@ -193,7 +237,8 @@ fn interactive_close_predicate_keeps_stdin_open_until_response() {
 fn repeated_cleanup_cannot_signal_after_reap() {
     let mut c = Command::new(env!("CARGO_BIN_EXE_izu-process-test-child"));
     c.arg("hold");
-    let mut p = OwnedProcess::spawn(&mut c).unwrap();
+    let mut p =
+        OwnedProcess::spawn_until(&mut c, Instant::now() + opts().timeout, &|| false).unwrap();
     let first = p.stop(Duration::from_secs(1));
     assert!(first.cooperative_stop_succeeded());
     assert_eq!(p.stop(Duration::from_secs(1)), first);
@@ -208,7 +253,8 @@ fn drop_is_nonblocking_and_does_not_claim_confirmed_cleanup() {
     c.arg("drop-full-stderr")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut p = OwnedProcess::spawn(&mut c).unwrap();
+    let mut p =
+        OwnedProcess::spawn_until(&mut c, Instant::now() + opts().timeout, &|| false).unwrap();
     let mut stdout = p.take_stdout().unwrap();
     izu_process::set_nonblocking(&stdout).unwrap();
     // The parent deliberately never drains stderr. The child must finish Drop
@@ -264,7 +310,8 @@ fn wrong_worker_protocol_is_rejected_and_its_owned_group_stopped() {
 fn direct_leader_observation_preserves_group_identity_until_cleanup() {
     let mut c = Command::new(env!("CARGO_BIN_EXE_izu-process-test-child"));
     c.arg("background");
-    let mut p = OwnedProcess::spawn(&mut c).unwrap();
+    let mut p =
+        OwnedProcess::spawn_until(&mut c, Instant::now() + opts().timeout, &|| false).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !p.observe_exit().unwrap() {
         assert!(Instant::now() < deadline);
@@ -277,7 +324,8 @@ fn direct_leader_observation_preserves_group_identity_until_cleanup() {
 #[test]
 fn direct_exited_empty_group_never_ignores_permission_error() {
     let mut c = Command::new("/usr/bin/true");
-    let mut p = OwnedProcess::spawn(&mut c).unwrap();
+    let mut p =
+        OwnedProcess::spawn_until(&mut c, Instant::now() + opts().timeout, &|| false).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !p.observe_exit().unwrap() {
         assert!(Instant::now() < deadline);
@@ -358,7 +406,8 @@ fn parent_disconnect_stops_the_workers_independent_cooperative_group() {
     c.arg("orphan-runner")
         .arg(env!("CARGO_BIN_EXE_izu-process-worker"))
         .arg(&heartbeat);
-    let mut parent = OwnedProcess::spawn(&mut c).unwrap();
+    let mut parent =
+        OwnedProcess::spawn_until(&mut c, Instant::now() + opts().timeout, &|| false).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !heartbeat.exists() {
         assert!(Instant::now() < deadline);
@@ -382,7 +431,8 @@ fn post_reap_group_probe_can_observe_actual_absence() {
     for mode in ["hold", "background"] {
         let mut c = Command::new(env!("CARGO_BIN_EXE_izu-process-test-child"));
         c.arg(mode);
-        let mut p = OwnedProcess::spawn(&mut c).unwrap();
+        let mut p =
+            OwnedProcess::spawn_until(&mut c, Instant::now() + opts().timeout, &|| false).unwrap();
         let pid = rustix::process::Pid::from_raw(i32::try_from(p.id()).unwrap()).unwrap();
         if mode == "background" {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -430,7 +480,8 @@ fn same_group_background_writer_is_quiescent_before_cleanup_succeeds() {
 fn independently_observed_absence_proves_self_killed_worker_stopped() {
     let mut c = Command::new(env!("CARGO_BIN_EXE_izu-process-test-child"));
     c.arg("self-kill-worker");
-    let mut p = OwnedProcess::spawn(&mut c).unwrap();
+    let mut p =
+        OwnedProcess::spawn_until(&mut c, Instant::now() + opts().timeout, &|| false).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !p.observe_exit().unwrap() {
         assert!(Instant::now() < deadline);
@@ -451,4 +502,162 @@ fn independently_observed_absence_proves_self_killed_worker_stopped() {
         report.cooperative_stop_succeeded(),
         "stopped-state proof must not depend on parent signal delivery: {report:?}"
     );
+}
+
+#[test]
+fn concurrent_worker_spawns_do_not_inherit_another_runs_output_writers() {
+    concurrent_worker_cohorts(20);
+}
+fn concurrent_worker_cohorts(cohorts: usize) {
+    for cohort in 0..cohorts {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(30));
+        let results = thread::scope(|scope| {
+            let jobs: Vec<_> = (0..30)
+                .map(|index| {
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        let mut c = if index % 2 == 0 {
+                            CommandSpec::new("/usr/bin/true")
+                        } else {
+                            let mut c = CommandSpec::new("/bin/sleep");
+                            c.arg("0.3");
+                            c
+                        };
+                        c.env("PATH", "/usr/bin:/bin");
+                        barrier.wait();
+                        run(&c, b"", &opts(), &worker(), &|| false).expect("owned execution")
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().expect("controller"))
+                .collect::<Vec<_>>()
+        });
+        for (index, result) in results.into_iter().enumerate() {
+            assert_eq!(
+                result.termination,
+                Termination::Completed,
+                "cohort {cohort} controller {index}"
+            );
+            assert!(
+                result.cleanup.cooperative_stop_succeeded(),
+                "cohort {cohort} controller {index}: {:?}",
+                result.cleanup
+            );
+            assert!(
+                result.stdout.eof && result.stderr.eof,
+                "cohort {cohort} controller {index}: stdout EOF {}, stderr EOF {}, cleanup {:?}",
+                result.stdout.eof,
+                result.stderr.eof,
+                result.cleanup
+            );
+        }
+    }
+}
+
+#[test]
+fn project_local_long_tmpdir_preserves_control_and_independent_target_stdin() {
+    let root = tempfile::tempdir().expect("owned project-local fixture");
+    let long = root
+        .path()
+        .join("channel-root-".to_owned() + &"x".repeat(160));
+    std::fs::create_dir(&long).expect("long temporary root");
+    assert!(std::os::unix::net::SocketAddr::from_pathname(long.join("ep-private/c")).is_err());
+    let mut c = CommandSpec::new(std::env::current_exe().expect("test executable"));
+    c.args([
+        "--ignored",
+        "--exact",
+        "long_tmpdir_driver_process",
+        "--nocapture",
+    ]);
+    c.env("TMPDIR", long.as_os_str())
+        .env("IZU_IPC_LONGPATH_DRIVER", "1");
+    let result = run(&c, b"", &opts(), &worker(), &|| false).expect("owned long-path driver");
+    assert_eq!(result.termination, Termination::Completed);
+    assert!(
+        result.exit.expect("driver exit").success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout.bytes)
+    );
+    assert!(result.stdout.eof && result.stderr.eof);
+    assert!(result.cleanup.cooperative_stop_succeeded());
+}
+
+#[test]
+#[ignore = "owned long-path fixture launched by the parent test"]
+fn long_tmpdir_driver_process() {
+    assert_eq!(std::env::var("IZU_IPC_LONGPATH_DRIVER").as_deref(), Ok("1"));
+    let tmp = std::path::PathBuf::from(std::env::var_os("TMPDIR").expect("long TMPDIR"));
+    assert!(std::os::unix::net::SocketAddr::from_pathname(tmp.join("ep-private/c")).is_err());
+    let input = vec![b'I'; 128 * 1024];
+    let result =
+        run(&command("echo"), &input, &opts(), &worker(), &|| false).expect("fallback echo");
+    assert_eq!(result.termination, Termination::Completed);
+    assert!(result.exit.expect("echo exit").success());
+    assert_eq!(result.stdout.bytes, input);
+    assert_eq!(result.stderr.bytes, b"diagnostic");
+    assert!(result.stdout.eof && result.stderr.eof);
+    assert!(result.cleanup.cooperative_stop_succeeded());
+    let result = run_interactive(
+        &command("interactive"),
+        b"Q",
+        &opts(),
+        &worker(),
+        &|| false,
+        &mut |stdout, _| stdout.windows(9).any(|bytes| bytes == b"response\n"),
+    )
+    .expect("fallback interactive");
+    assert_eq!(result.termination, Termination::Completed);
+    assert!(result.exit.expect("interactive exit").success());
+    assert_eq!(result.stdout.bytes, b"response\nclosed\n");
+    assert!(result.stdout.eof && result.stderr.eof);
+    assert!(result.cleanup.cooperative_stop_succeeded());
+    let noisy_worker = WorkerLauncher {
+        executable: PathBuf::from(env!("CARGO_BIN_EXE_izu-process-test-child")),
+        prefix_args: vec!["worker-with-untrusted-connections".into()],
+    };
+    let result = run(
+        &command("echo"),
+        b"original input",
+        &opts(),
+        &noisy_worker,
+        &|| false,
+    )
+    .expect("authenticated worker among partial and wrong connections");
+    assert_eq!(result.termination, Termination::Completed);
+    assert!(result.exit.expect("authenticated target exit").success());
+    assert_eq!(result.input_written, b"original input".len());
+    assert_eq!(result.stdout.bytes, b"original input");
+    assert_eq!(result.stderr.bytes, b"diagnostic");
+    assert!(result.stdout.eof && result.stderr.eof);
+    assert!(result.cleanup.cooperative_stop_succeeded());
+    let partial_worker = WorkerLauncher {
+        executable: PathBuf::from(env!("CARGO_BIN_EXE_izu-process-test-child")),
+        prefix_args: vec!["partial-auth-worker".into()],
+    };
+    let mut bounded = opts();
+    bounded.timeout = Duration::from_millis(100);
+    let result = run(
+        &command("echo"),
+        b"must not reach target",
+        &bounded,
+        &partial_worker,
+        &|| false,
+    )
+    .expect("partial authentication timeout");
+    assert_eq!(result.termination, Termination::TimedOut);
+    assert_eq!(result.input_written, 0);
+    assert!(result.stdout.bytes.is_empty() && result.stderr.bytes.is_empty());
+    assert!(result.stdout.eof && result.stderr.eof);
+    assert!(result.cleanup.cooperative_stop_succeeded());
+    assert!(result.elapsed < bounded.timeout + bounded.cleanup_timeout + Duration::from_secs(1));
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let result = run(&command("hold"), b"", &opts(), &worker(), &|| {
+        calls.fetch_add(1, Ordering::Relaxed) >= 10
+    })
+    .expect("fallback cancellation");
+    assert_eq!(result.termination, Termination::Cancelled);
+    assert!(result.stdout.eof && result.stderr.eof);
+    assert!(result.cleanup.cooperative_stop_succeeded());
+    concurrent_worker_cohorts(1);
 }

@@ -601,7 +601,7 @@ pub fn tools() -> Result<Vec<Value>, ApiError> {
         let mut input = schema.clone();
         input["properties"]["operation"] = variant.clone();
         input["properties"]["schema_version"] = json!({"type":"integer","const":SCHEMA_VERSION});
-        tools.push(json!({"name":format!("izu_{name}"),"description":format!("Typed izu {name} operation. {}",instructions()),"inputSchema":input,"annotations":{"readOnlyHint":matches!(name,"capabilities"|"schema"|"inspect"|"status"|"diff"|"log"|"show"|"workspace_list"|"ref_list"|"operations"|"candidate_show"|"verify"|"bundle_inspect"|"bundle_verify"|"environment_status"|"jobs_list"|"job_status"|"writer_status"),"openWorldHint":matches!(name,"git_import"|"git_fetch"|"git_push"|"git_export"|"check"|"land_current"|"job_cancel")}}));
+        tools.push(json!({"name":format!("izu_{name}"),"description":format!("Typed izu {name} operation. {}",instructions()),"inputSchema":input,"annotations":{"readOnlyHint":matches!(name,"capabilities"|"schema"|"inspect"|"status"|"diff"|"log"|"show"|"workspace_list"|"ref_list"|"tag_list"|"metadata_inspect"|"operations"|"candidate_show"|"verify"|"storage_plan"|"bundle_inspect"|"bundle_verify"|"environment_status"|"jobs_list"|"job_status"|"writer_status"),"destructiveHint":name=="storage_reclaim","openWorldHint":matches!(name,"git_clone"|"git_import"|"git_fetch"|"git_push"|"git_export"|"check"|"land_current"|"job_cancel")}}));
     }
     Ok(tools)
 }
@@ -611,7 +611,7 @@ fn managed_launch(name: &str) -> bool {
 }
 
 fn instructions() -> &'static str {
-    "Use schema_version 1 and exact IDs. Mutations need the supplied workspace expectation. Local checkpoints are not remote backups. MCP discovery does not bind a host thread; explicitly manage it with `izu start NAME -- PROGRAM ARGS`. Generic process launch is absent from MCP."
+    "Use schema_version 1 and exact IDs. Mutations need their supplied workspace, reference, tag or operation expectation. Local checkpoints are not remote backups. MCP discovery does not bind a host thread; explicitly manage it with `izu start NAME -- PROGRAM ARGS`. Generic process launch is absent from MCP."
 }
 
 fn server_info() -> Value {
@@ -817,6 +817,7 @@ mod tests {
             assert!(!tools.iter().any(|tool| tool["name"] == name));
         }
         for name in [
+            "izu_git_clone",
             "izu_git_import",
             "izu_git_fetch",
             "izu_git_push",

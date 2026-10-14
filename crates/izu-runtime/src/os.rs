@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::types::{DirectoryIdentity, io_error};
 use crate::{CapturedOutput, JobOutput, RuntimeError};
@@ -118,22 +118,24 @@ pub(crate) fn directory_identity_handle(
 
 pub(crate) fn spawn_group(
     command: &mut Command,
-) -> Result<izu_process::OwnedProcess, std::io::Error> {
+    deadline: Instant,
+    cancel: &izu_model::CancellationToken,
+) -> Result<izu_process::OwnedProcess, izu_process::RunError> {
     #[cfg(unix)]
     {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        izu_process::OwnedProcess::spawn(command)
+        izu_process::OwnedProcess::spawn_until(command, deadline, &|| cancel.is_cancelled())
     }
     #[cfg(not(unix))]
     {
-        let _ = command;
-        Err(std::io::Error::new(
+        let _ = (command, deadline, cancel);
+        Err(izu_process::RunError::Spawn(std::io::Error::new(
             ErrorKind::Unsupported,
             "owned process groups require Unix",
-        ))
+        )))
     }
 }
 
@@ -154,6 +156,28 @@ pub(crate) fn kill_owned_group(child: &mut izu_process::OwnedProcess) -> Result<
         let _ = child;
         Err(RuntimeError::Unsupported(
             "group shutdown requires Unix".into(),
+        ))
+    }
+}
+
+/// Signal only a retained, unreaped selected child, never a registry PID.
+pub(crate) fn interrupt_child(child: &std::process::Child) -> Result<(), RuntimeError> {
+    #[cfg(unix)]
+    {
+        let raw = i32::try_from(child.id()).map_err(|_| {
+            RuntimeError::UnsafeClose("selected child PID exceeds platform range".into())
+        })?;
+        let pid = rustix::process::Pid::from_raw(raw)
+            .ok_or_else(|| RuntimeError::UnsafeClose("selected child PID is invalid".into()))?;
+        rustix::process::kill_process(pid, rustix::process::Signal::INT).map_err(|error| {
+            RuntimeError::UnsafeClose(format!("interrupt selected child: {error}"))
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+        Err(RuntimeError::Unsupported(
+            "cooperative interrupt requires Unix".into(),
         ))
     }
 }

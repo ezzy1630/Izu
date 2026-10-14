@@ -17,6 +17,34 @@ use std::time::Instant;
 
 const ARTIFACT_VERSION: u32 = 1;
 
+fn publication_metadata(directory: &Directory) -> crate::DirectoryMetadataObservation {
+    use crate::DirectoryMetadataObservation;
+    #[cfg(unix)]
+    {
+        match directory.metadata_self() {
+            Ok(metadata) => DirectoryMetadataObservation::Observed {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                mode: metadata.mode() & 0o777,
+                uid: metadata.uid(),
+                gid: metadata.gid(),
+            },
+            Err(error) => DirectoryMetadataObservation::Unavailable {
+                kind: error.kind(),
+                raw_os_error: error.raw_os_error(),
+            },
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        DirectoryMetadataObservation::Unavailable {
+            kind: std::io::ErrorKind::Unsupported,
+            raw_os_error: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum LeaseMode {
     Shared,
@@ -289,10 +317,35 @@ impl EnvironmentCache {
             .rename_noreplace(stage_name, &self.artifacts, OsStr::new(&key.to_string()))
             .map_err(|source| EnvironmentError::PreparationIncomplete {
                 stage: stage_path.clone(),
-                source: Box::new(io(&stage_path, source)),
+                source: Box::new(EnvironmentError::StageRenameIo {
+                    stage: stage_path.clone(),
+                    destination: self.path.join("artifacts").join(key.to_string()),
+                    stage_metadata: publication_metadata(stage),
+                    parent_metadata: publication_metadata(&self.artifacts),
+                    source,
+                }),
             })?;
         let published = self.path.join("artifacts").join(key.to_string());
         self.verify_published_stage(stage, key)?;
+        #[cfg(test)]
+        tests::publication_seal_checkpoint(self, key, false).map_err(|source| {
+            EnvironmentError::PublicationIdentityUncertain {
+                path: published.clone(),
+                source: Box::new(source),
+            }
+        })?;
+        // Seal the pinned directory after rename, then persist the seal before
+        // acknowledging publication. A failure now cannot imply rollback.
+        set_mode(stage.file(), 0o555)
+            .and_then(|()| {
+                #[cfg(test)]
+                tests::publication_seal_checkpoint(self, key, true)?;
+                stage.sync().map_err(|error| io(&published, error))
+            })
+            .map_err(|source| EnvironmentError::PublicationIdentityUncertain {
+                path: published.clone(),
+                source: Box::new(source),
+            })?;
         self.artifacts
             .sync()
             .map_err(|source| EnvironmentError::DurabilityUncertain {
@@ -401,7 +454,10 @@ impl EnvironmentCache {
         stage
             .remove_file(OsStr::new("BUILDING"))
             .map_err(|error| io("BUILDING", error))?;
-        set_mode(stage.file(), 0o555)?;
+        // Some macOS hosts require owner write permission on the renamed directory.
+        // Keep only this root writable until publication; payload and metadata
+        // are already sealed. The exclusive key lease excludes cooperative readers.
+        set_mode(stage.file(), 0o700)?;
         stage.sync().map_err(|error| io("artifact stage", error))?;
         let summary = ArtifactSummary {
             key: recipe.key(),
@@ -1117,11 +1173,41 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    // Fault fixtures deliberately move a sealed directory outside the cache
+    // protocol. Some macOS hosts require owner write permission for that move;
+    // restore the exact seal on the held inode before exercising product code.
+    fn rename_owned_directory(parent: &Directory, from: &OsStr, to: &OsStr) {
+        let held = parent.open_dir(from).unwrap();
+        let seal = held.metadata_self().unwrap().permissions();
+        set_mode(held.file(), 0o700).unwrap();
+        let result = parent.rename_noreplace(from, parent, to);
+        held.file().set_permissions(seal).unwrap();
+        result.unwrap();
+    }
+
+    type PublicationSealHook = Box<dyn FnMut(&EnvironmentCache, Digest, bool) -> Result<()>>;
+
     type ImportPublicationHook = Box<dyn FnOnce(&EnvironmentCache, Digest)>;
 
     std::thread_local! {
+        static PUBLICATION_SEAL_HOOK: std::cell::RefCell<Option<PublicationSealHook>> =
+            const { std::cell::RefCell::new(None) };
         static IMPORT_PUBLICATION_HOOK: std::cell::RefCell<Option<ImportPublicationHook>> =
             const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn publication_seal_checkpoint(
+        cache: &EnvironmentCache,
+        key: Digest,
+        sealed: bool,
+    ) -> Result<()> {
+        PUBLICATION_SEAL_HOOK.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.as_mut() {
+                Some(hook) => hook(cache, key, sealed),
+                None => Ok(()),
+            }
+        })
     }
 
     pub(super) fn after_import_publication(cache: &EnvironmentCache, key: Digest) {
@@ -1418,6 +1504,121 @@ mod tests {
         }
 
         #[test]
+        fn published_unsealed_root_is_exclusive_and_interruption_is_rejected() {
+            let fixture = Fixture::new();
+            let request = fixture.recipe.request();
+            PUBLICATION_SEAL_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move |cache, key, sealed| {
+                    assert!(!sealed);
+                    let path = cache.path.join("artifacts").join(key.to_string());
+                    assert_eq!(
+                        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                        0o700
+                    );
+                    assert_eq!(
+                        fs::metadata(path.join("payload"))
+                            .unwrap()
+                            .permissions()
+                            .mode()
+                            & 0o777,
+                        0o555
+                    );
+                    assert_eq!(
+                        fs::metadata(path.join("READY"))
+                            .unwrap()
+                            .permissions()
+                            .mode()
+                            & 0o777,
+                        0o444
+                    );
+                    assert!(matches!(
+                        cache.acquire_key(key, &CancellationToken::new()),
+                        Err(EnvironmentError::Busy)
+                    ));
+                    Err(EnvironmentError::Cancelled)
+                }));
+            });
+            assert!(matches!(
+                fixture.uncertainty(fixture.import()),
+                EnvironmentError::Cancelled
+            ));
+            PUBLICATION_SEAL_HOOK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            assert!(matches!(
+                fixture.cache.verify_with_lease(
+                    request,
+                    fixture
+                        .cache
+                        .acquire_key(fixture.recipe.key(), &fixture.cancel)
+                        .unwrap(),
+                    &fixture.cancel
+                ),
+                Err(EnvironmentError::Corrupt(_))
+            ));
+            assert!(matches!(
+                fixture.import(),
+                Err(EnvironmentError::Corrupt(_))
+            ));
+            assert_eq!(
+                fs::read(fixture.published().join("payload/0/file")).unwrap(),
+                ORIGINAL
+            );
+        }
+
+        #[test]
+        fn root_seal_failure_retains_unsealed_publication() {
+            let fixture = Fixture::new();
+            PUBLICATION_SEAL_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(|_, _, sealed| {
+                    assert!(!sealed);
+                    Err(io("artifact seal", std::io::Error::from_raw_os_error(13)))
+                }));
+            });
+            assert!(matches!(
+                fixture.uncertainty(fixture.import()),
+                EnvironmentError::Io { .. }
+            ));
+            PUBLICATION_SEAL_HOOK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            assert!(matches!(
+                fixture.import(),
+                Err(EnvironmentError::Corrupt(_))
+            ));
+        }
+
+        #[test]
+        fn seal_persistence_failure_cannot_acknowledge_import() {
+            let fixture = Fixture::new();
+            PUBLICATION_SEAL_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(|_, _, sealed| {
+                    if sealed {
+                        Err(io(
+                            "artifact seal sync",
+                            std::io::Error::from_raw_os_error(5),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }));
+            });
+            let error = fixture.uncertainty(fixture.import());
+            assert!(matches!(error, EnvironmentError::Io { .. }));
+            PUBLICATION_SEAL_HOOK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            assert_eq!(
+                fs::metadata(fixture.published())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o555
+            );
+        }
+
+        #[test]
         fn healthy_fresh_import_binds_and_reused_import_keeps_its_receipt_semantics() {
             let fixture = Fixture::new();
             let receipt = fixture.import().unwrap();
@@ -1440,6 +1641,130 @@ mod tests {
             assert_eq!(reused.cloned_files, 0);
             assert_eq!(reused.logical_bytes, 0);
             assert_eq!(reused.allocated_file_bytes_sum, 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_rename_refusal_preserves_original_errno_and_pinned_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = EnvironmentCache::open(temp.path().join("cache"), EnvironmentLimits::default())
+            .unwrap();
+        let name = OsStr::new(".build-owned");
+        let stage = cache.artifacts.create_dir(name).unwrap();
+        let key = Digest::of_bytes(b"rename-refusal-diagnostics");
+        let destination = cache.path.join("artifacts").join(key.to_string());
+        fs::create_dir(&destination).unwrap();
+        fs::write(
+            destination.join("unique-existing-work"),
+            b"preserve destination",
+        )
+        .unwrap();
+        let expected_stage = stage.metadata_self().unwrap();
+        let expected_parent = cache.artifacts.metadata_self().unwrap();
+        let error = cache.publish_prepared_stage(name, &stage, key).unwrap_err();
+        let EnvironmentError::PreparationIncomplete {
+            stage: retained,
+            source,
+        } = error
+        else {
+            panic!("rename refusal must retain preparation state");
+        };
+        assert_eq!(retained, cache.path.join("artifacts").join(name));
+        let EnvironmentError::StageRenameIo {
+            stage: observed_stage,
+            destination: observed_destination,
+            stage_metadata,
+            parent_metadata,
+            source,
+        } = *source
+        else {
+            panic!("rename refusal must preserve its specific operation");
+        };
+        assert_eq!(observed_stage, retained);
+        assert_eq!(observed_destination, destination);
+        assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(source.raw_os_error(), Some(17));
+        for (observation, expected) in [
+            (stage_metadata, expected_stage),
+            (parent_metadata, expected_parent),
+        ] {
+            assert!(
+                matches!(observation, crate::DirectoryMetadataObservation::Observed {
+                device, inode, mode, uid, gid,
+            } if device == expected.dev() && inode == expected.ino()
+                && mode == expected.mode() & 0o777 && uid == expected.uid() && gid == expected.gid())
+            );
+        }
+        assert!(retained.is_dir());
+        assert_eq!(
+            fs::read(destination.join("unique-existing-work")).unwrap(),
+            b"preserve destination"
+        );
+    }
+
+    /// Run with --nocapture in an exact CI checkout to observe that filesystem's
+    /// permission semantics. This control does not diagnose another failed path.
+    #[cfg(unix)]
+    #[test]
+    fn stage_rename_permission_probe() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = Directory::open(temp.path()).unwrap();
+        let filesystem = rustix::fs::fstatfs(parent.file()).unwrap();
+        #[cfg(target_vendor = "apple")]
+        let native_operation = "renameatx_np(RENAME_EXCL)";
+        #[cfg(target_os = "linux")]
+        let native_operation = "renameat2(RENAME_NOREPLACE)";
+        #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+        let native_operation = "unsupported atomic no-replacement rename";
+        eprintln!(
+            "stage rename probe root={:?}; fs_type={}; mount_flags={}; parent={}",
+            temp.path(),
+            filesystem.f_type,
+            filesystem.f_flags,
+            publication_metadata(&parent)
+        );
+        for mode in [0o555, 0o700] {
+            let name = format!("stage-{mode:04o}");
+            let target = format!("installed-{mode:04o}");
+            let stage = parent.create_dir(OsStr::new(&name)).unwrap();
+            let mut file = stage
+                .create_new_file(OsStr::new("manifest-control"))
+                .unwrap();
+            file.write_all(b"unchanged manifest control").unwrap();
+            set_mode(&file, 0o444).unwrap();
+            sync_file(&file).unwrap();
+            set_mode(stage.file(), mode).unwrap();
+            stage.sync().unwrap();
+            let before = publication_metadata(&stage);
+            let result = parent.rename_noreplace(OsStr::new(&name), &parent, OsStr::new(&target));
+            eprintln!(
+                "stage rename probe operation={native_operation}; mode={mode:04o}; source={name}; target={target}; before={before}; file_mode={:04o}; result={result:?}; after={}",
+                file.metadata().unwrap().mode() & 0o777,
+                publication_metadata(&stage)
+            );
+            if mode == 0o700 {
+                assert!(result.is_ok(), "writable control rename failed: {result:?}");
+            } else {
+                assert!(
+                    result.is_ok()
+                        || result.as_ref().is_err_and(
+                            |error| error.kind() == std::io::ErrorKind::PermissionDenied
+                        )
+                );
+            }
+            set_mode(stage.file(), 0o700).unwrap();
+            let retained = if result.is_ok() {
+                temp.path().join(target)
+            } else {
+                temp.path().join(name)
+            };
+            assert_eq!(
+                fs::read(retained.join("manifest-control")).unwrap(),
+                b"unchanged manifest control"
+            );
+            fs::remove_file(retained.join("manifest-control")).unwrap();
+            fs::remove_dir(retained).unwrap();
         }
     }
 
@@ -1485,14 +1810,11 @@ mod tests {
         )
         .unwrap();
         cache.publish_prepared_stage(name, &stage, key).unwrap();
-        cache
-            .artifacts
-            .rename_noreplace(
-                OsStr::new(&key.to_string()),
-                &cache.artifacts,
-                OsStr::new("retained-original"),
-            )
-            .unwrap();
+        rename_owned_directory(
+            &cache.artifacts,
+            OsStr::new(&key.to_string()),
+            OsStr::new("retained-original"),
+        );
         cache
             .artifacts
             .create_dir(OsStr::new(&key.to_string()))
@@ -1591,14 +1913,11 @@ mod tests {
             cache.acquire_key(recipe.key(), &cancel),
             Err(EnvironmentError::Busy)
         ));
-        cache
-            .artifacts
-            .rename_noreplace(
-                OsStr::new(&recipe.key().to_string()),
-                &cache.artifacts,
-                OsStr::new("retained-original-artifact"),
-            )
-            .unwrap();
+        rename_owned_directory(
+            &cache.artifacts,
+            OsStr::new(&recipe.key().to_string()),
+            OsStr::new("retained-original-artifact"),
+        );
         cache
             .artifacts
             .create_dir(OsStr::new(&recipe.key().to_string()))

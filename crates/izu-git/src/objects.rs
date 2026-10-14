@@ -11,6 +11,8 @@ pub(crate) struct Commit {
     pub message: String,
     pub raw: Vec<u8>,
     pub unsupported: Vec<String>,
+    pub signed: bool,
+    pub has_mergetags: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -32,12 +34,15 @@ pub(crate) fn commit(id: GitObjectId, raw: Vec<u8>) -> Result<Commit> {
         object: id.to_string(),
         reason: reason.into(),
     };
+    // The adapter also applies its configurable object limit before parsing.
+    if raw.len() > 64 * 1024 * 1024 {
+        return Err(Error::Limit("Git commit bytes"));
+    }
     let boundary = raw
         .windows(2)
         .position(|pair| pair == b"\n\n")
         .ok_or_else(|| fail("commit has no header/message separator"))?;
-    let headers = std::str::from_utf8(&raw[..boundary])
-        .map_err(|_| fail("non-UTF8 commit headers are unsupported"))?;
+    let headers = &raw[..boundary];
     let message = std::str::from_utf8(&raw[boundary + 2..])
         .map_err(|_| fail("non-UTF8 commit messages are unsupported"))?
         .to_owned();
@@ -46,13 +51,23 @@ pub(crate) fn commit(id: GitObjectId, raw: Vec<u8>) -> Result<Commit> {
     let mut author = None;
     let mut committer = false;
     let mut unsupported = Vec::new();
-    for line in headers.split('\n') {
-        if line.starts_with(' ') {
+    let mut continued_header = false;
+    let mut signatures = std::collections::BTreeSet::new();
+    let mut mergetags = Vec::new();
+    let mut lines = headers.split(|byte| *byte == b'\n').peekable();
+    while let Some(line) = lines.next() {
+        if line.starts_with(b" ") {
+            if !continued_header {
+                return Err(fail("continuation without a multiline commit header"));
+            }
             continue;
         }
+        let line = std::str::from_utf8(line)
+            .map_err(|_| fail("non-UTF8 commit headers are unsupported"))?;
         let (name, value) = line
             .split_once(' ')
             .ok_or_else(|| fail("malformed commit header"))?;
+        continued_header = matches!(name, "gpgsig" | "gpgsig-sha256" | "mergetag");
         match name {
             "tree" if tree.is_none() => tree = Some(value.parse()?),
             "parent" => {
@@ -68,8 +83,35 @@ pub(crate) fn commit(id: GitObjectId, raw: Vec<u8>) -> Result<Commit> {
                 signature(value).map_err(|reason| fail(&reason))?;
                 committer = true;
             }
-            "gpgsig" | "gpgsig-sha256" | "mergetag" => {
-                unsupported.push(format!("signed commit or merge tag ({name})"))
+            "gpgsig" | "gpgsig-sha256" => {
+                // Signatures are opaque origin metadata. Only byte-identical exports
+                // may retain them; parsing them does not authenticate the author.
+                if value.is_empty() || !signatures.insert(name) {
+                    return Err(fail("empty or duplicate commit signature header"));
+                }
+            }
+            "mergetag" => {
+                if mergetags.len() >= 1024 {
+                    return Err(Error::Limit("commit merge tag count"));
+                }
+                // Remove exactly the Git continuation prefix, retaining blank
+                // lines and additional leading spaces in the embedded payload.
+                // These lines partition the already bounded commit headers.
+                let mut embedded = value.as_bytes().to_vec();
+                while lines.peek().is_some_and(|line| line.starts_with(b" ")) {
+                    if let Some(continuation) = lines.next() {
+                        embedded.push(b'\n');
+                        embedded.extend_from_slice(&continuation[1..]);
+                    }
+                }
+                let embedded_id = object_id("tag", &embedded);
+                let parsed = tag(embedded_id, embedded)
+                    .map_err(|error| fail(&format!("invalid merge tag: {error}")))?;
+                if parsed.target_kind != crate::GitTagTargetKind::Commit {
+                    return Err(fail("merge tag target must declare commit type"));
+                }
+                mergetags.push(parsed.target);
+                continued_header = false;
             }
             "encoding" if value.eq_ignore_ascii_case("utf-8") => {}
             "encoding" => unsupported.push(format!("commit encoding {value}")),
@@ -79,12 +121,17 @@ pub(crate) fn commit(id: GitObjectId, raw: Vec<u8>) -> Result<Commit> {
             _ => unsupported.push(format!("unknown commit header {name}")),
         }
     }
+    if mergetags.iter().any(|target| !parents.contains(target)) {
+        return Err(fail("merge tag target is not a commit parent"));
+    }
+    let has_mergetags = !mergetags.is_empty();
     let tree = tree.ok_or_else(|| fail("missing tree"))?;
     let (author_name, author_email, author_seconds) =
         author.ok_or_else(|| fail("missing author"))?;
     if !committer {
         return Err(fail("missing committer"));
     }
+    let signed = !signatures.is_empty();
     Ok(Commit {
         tree,
         parents,
@@ -94,6 +141,8 @@ pub(crate) fn commit(id: GitObjectId, raw: Vec<u8>) -> Result<Commit> {
         message,
         raw,
         unsupported,
+        signed,
+        has_mergetags,
     })
 }
 
@@ -207,6 +256,49 @@ mod tests {
         assert!(tree(id, b"100644 file\0short", 10).is_err());
     }
     #[test]
+    fn validates_multiple_merge_tags_against_all_parents_and_bounds_count() {
+        let parent = object_id("commit", b"parent");
+        let second = object_id("commit", b"second");
+        let embedded =
+            |target| format!("mergetag object {target}\n type commit\n tag merged\n \n message\n");
+        let header = format!(
+            "tree {}\nauthor A <a@b> 123 +0000\ncommitter B <b@c> 124 +0000\n",
+            object_id("tree", b"")
+        );
+        // Parent declarations can follow merge tags: validation uses the whole
+        // parsed commit, rather than order-dependent parser state.
+        let source = format!(
+            "{header}{}{}parent {parent}\nparent {second}\n\nmerge\n",
+            embedded(parent),
+            embedded(second)
+        );
+        let parsed = commit(object_id("commit", source.as_bytes()), source.into_bytes())
+            .expect("multiple valid merge tags");
+        assert!(parsed.has_mergetags);
+        assert!(parsed.unsupported.is_empty());
+        let mut binary =
+            format!("{header}parent {parent}\n{}\nmerge\n", embedded(parent)).into_bytes();
+        let message_start = binary
+            .windows(b" message".len())
+            .position(|part| part == b" message")
+            .expect("fixture message");
+        binary[message_start + 1] = 0xff;
+        let parsed = commit(object_id("commit", &binary), binary.clone())
+            .expect("opaque non-UTF8 merge tag message");
+        assert_eq!(parsed.raw, binary);
+        let excessive = format!(
+            "{header}parent {parent}\n{}\nmerge\n",
+            embedded(parent).repeat(1025)
+        );
+        assert!(matches!(
+            commit(
+                object_id("commit", excessive.as_bytes()),
+                excessive.into_bytes()
+            ),
+            Err(Error::Limit("commit merge tag count"))
+        ));
+    }
+    #[test]
     fn rejects_invalid_commit_identity_and_keeps_message_bytes() {
         let source = format!(
             "tree {}\nauthor A <a@b> 123 +0530\ncommitter B <b@c> 124 -0800\n\nexact\n",
@@ -228,4 +320,78 @@ mod tests {
             .is_err()
         );
     }
+}
+
+/// Tag messages and embedded signatures are opaque bytes. Their validity as a
+/// cryptographic signature is separate from their exact interchange identity.
+#[derive(Clone, Debug)]
+pub(crate) struct Tag {
+    pub target: GitObjectId,
+    pub target_kind: crate::GitTagTargetKind,
+    pub name: String,
+    pub tagger: Option<String>,
+    pub signed: bool,
+    pub raw: Vec<u8>,
+}
+
+pub(crate) fn tag(id: GitObjectId, raw: Vec<u8>) -> Result<Tag> {
+    let fail = |reason: &str| Error::InvalidObject {
+        object: id.to_string(),
+        reason: reason.into(),
+    };
+    let boundary = raw
+        .windows(2)
+        .position(|pair| pair == b"\n\n")
+        .ok_or_else(|| fail("tag has no header/message separator"))?;
+    let headers =
+        std::str::from_utf8(&raw[..boundary]).map_err(|_| fail("non-UTF8 tag headers"))?;
+    let mut target = None;
+    let mut target_kind = None;
+    let mut name = None;
+    let mut tagger = None;
+    for line in headers.split('\n') {
+        let (key, value) = line
+            .split_once(' ')
+            .ok_or_else(|| fail("malformed tag header"))?;
+        match key {
+            "object" if target.is_none() => target = Some(value.parse()?),
+            "type" if target_kind.is_none() => {
+                target_kind = Some(crate::GitTagTargetKind::parse(value)?)
+            }
+            "tag" if name.is_none() => {
+                if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
+                    return Err(fail("invalid tag name header"));
+                }
+                name = Some(value.to_owned());
+            }
+            "tagger" if tagger.is_none() => {
+                signature(value).map_err(|reason| fail(&reason))?;
+                tagger = Some(value.to_owned());
+            }
+            "object" | "type" | "tag" | "tagger" => {
+                return Err(fail("duplicate singleton tag header"));
+            }
+            _ => return Err(fail("unknown tag header")),
+        }
+    }
+    let message = &raw[boundary + 2..];
+    let signed = [
+        b"-----BEGIN PGP SIGNATURE-----".as_slice(),
+        b"-----BEGIN SSH SIGNATURE-----",
+        b"-----BEGIN SIGNED MESSAGE-----",
+    ]
+    .iter()
+    .any(|marker| {
+        message
+            .split(|byte| *byte == b'\n')
+            .any(|line| line == *marker)
+    });
+    Ok(Tag {
+        target: target.ok_or_else(|| fail("missing tag target"))?,
+        target_kind: target_kind.ok_or_else(|| fail("missing tag target type"))?,
+        name: name.ok_or_else(|| fail("missing tag name"))?,
+        tagger,
+        signed,
+        raw,
+    })
 }

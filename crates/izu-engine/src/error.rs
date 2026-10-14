@@ -44,6 +44,10 @@ pub enum EngineError {
         expected: Option<RevisionId>,
         actual: Option<RevisionId>,
     },
+    #[error("tag {name} changed since the exact expected record")]
+    StaleTag { name: RefName },
+    #[error("native metadata version {current} requires explicit migration to version {required}")]
+    MetadataMigrationRequired { current: u32, required: u32 },
     #[error("source changed while being read: {0}")]
     SourceChanged(PathBuf),
     #[error(
@@ -106,6 +110,11 @@ pub enum EngineError {
         operation: Option<OperationId>,
         reason: String,
     },
+    #[error("reclamation blocked by {entry}: {reason}")]
+    ReclamationBlocked {
+        entry: PathBuf,
+        reason: &'static str,
+    },
     #[error("unsupported platform capability: {0}")]
     UnsupportedPlatform(&'static str),
 }
@@ -126,6 +135,8 @@ impl EngineError {
             Self::WorkspaceNameExists(_) => "workspace_name_exists",
             Self::StaleWorkspace { .. } => "stale_workspace",
             Self::StaleRef { .. } => "stale_ref",
+            Self::StaleTag { .. } => "stale_tag",
+            Self::MetadataMigrationRequired { .. } => "metadata_migration_required",
             Self::WorkspaceBusy { .. } => "workspace_busy",
             Self::SourceChanged(_) => "source_changed",
             Self::UncommittedSource { .. } => "uncommitted_source",
@@ -148,6 +159,7 @@ impl EngineError {
             Self::PublicationUncertain { .. } => "publication_uncertain",
             Self::RestorationFailed { .. } => "restoration_failed",
             Self::RestorationUncertain { .. } => "restoration_uncertain",
+            Self::ReclamationBlocked { .. } => "reclamation_blocked",
             Self::UnsupportedPlatform(_) => "unsupported_platform",
         }
     }

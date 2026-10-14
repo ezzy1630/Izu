@@ -13,14 +13,71 @@ fn main() {
         "__process-worker" => {
             izu_process::worker_main().unwrap();
         }
-        "wrong-worker" => {
-            let mut channel =
-                std::os::unix::net::UnixStream::connect(&args[args.len() - 1]).unwrap();
-            channel.write_all(b"IZUP\x02").unwrap();
-            channel
-                .write_all(&std::process::id().to_le_bytes())
+        "partial-auth-worker" => {
+            let endpoint = args
+                .last()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .strip_prefix("tcp:")
                 .unwrap();
+            let port: u16 = endpoint.parse().unwrap();
+            let mut stream =
+                std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+            stream.write_all(b"?").unwrap();
             thread::sleep(Duration::from_secs(30));
+        }
+        "worker-with-untrusted-connections" => {
+            let endpoint = args
+                .last()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .strip_prefix("tcp:")
+                .unwrap();
+            let port: u16 = endpoint.parse().unwrap();
+            let mut peers = Vec::new();
+            for index in 0..12 {
+                let mut stream =
+                    std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+                if index % 2 == 0 {
+                    stream.write_all(b"wrong authentication").unwrap();
+                }
+                peers.push(stream);
+            }
+            izu_process::worker_main().unwrap();
+            drop(peers);
+        }
+        "wrong-worker" => {
+            let endpoint = &args[args.len() - 1];
+            if let Some(port) = endpoint
+                .to_str()
+                .and_then(|value| value.strip_prefix("tcp:"))
+            {
+                let mut nonce = [0; 32];
+                std::fs::File::from(rustix::io::fcntl_dupfd_cloexec(io::stdin(), 3).unwrap())
+                    .read_exact(&mut nonce)
+                    .unwrap();
+                let mut channel = std::net::TcpStream::connect((
+                    std::net::Ipv4Addr::LOCALHOST,
+                    port.parse::<u16>().unwrap(),
+                ))
+                .unwrap();
+                channel.write_all(&nonce).unwrap();
+                channel.write_all(b"IZUP\x01").unwrap();
+                channel
+                    .write_all(&std::process::id().to_le_bytes())
+                    .unwrap();
+                channel.write_all(b"Z").unwrap(); // Authenticated but invalid worker status.
+                thread::sleep(Duration::from_secs(30));
+            } else {
+                let mut channel = std::os::unix::net::UnixStream::connect(endpoint).unwrap();
+                channel.write_all(b"IZUP\x02").unwrap();
+                channel
+                    .write_all(&std::process::id().to_le_bytes())
+                    .unwrap();
+                thread::sleep(Duration::from_secs(30));
+            }
         }
         "echo" => {
             let mut bytes = Vec::new();
@@ -45,13 +102,14 @@ fn main() {
                 )
                 .unwrap();
         }
-        "heartbeat" => {
+        "heartbeat" | "heartbeat-hold" => {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&args[2])
                 .unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let duration = if args[1] == "heartbeat-hold" { 30 } else { 2 };
+            let deadline = std::time::Instant::now() + Duration::from_secs(duration);
             while std::time::Instant::now() < deadline {
                 file.write_all(b"tick\n").unwrap();
                 file.flush().unwrap();
@@ -103,7 +161,12 @@ fn main() {
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null());
-                    let mut owner = izu_process::OwnedProcess::spawn(&mut command).unwrap();
+                    let mut owner = izu_process::OwnedProcess::spawn_until(
+                        &mut command,
+                        std::time::Instant::now() + Duration::from_secs(5),
+                        &|| false,
+                    )
+                    .unwrap();
                     (!owner.stop(Duration::ZERO).cooperative_stop_succeeded()).then_some(owner)
                 })
                 .expect("fixture must obtain an unconfirmed zero-budget cleanup");

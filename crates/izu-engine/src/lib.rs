@@ -13,9 +13,12 @@ pub use error::{EngineError, Result};
 pub use izu_model::{
     CancellationToken, CandidateId, ChangeId, CheckAttemptId, CheckEvidence, CheckInputs,
     CheckOutcome, CheckSpec, ConflictReason, EvidenceId, FileMode, Identity, IntegrationCandidate,
-    ObjectId, OperationId, RefName, RepoPath, RepositoryView, ResolvedTreeEntry, Revision,
-    RevisionId, SourceRecord, Tree, TreeEntry, TreeId, WorkspaceId, WorkspaceRecord,
+    MetadataVersion, NativeTag, ObjectId, OperationId, RefName, RepoPath, RepositoryView,
+    ResolvedTreeEntry, Revision, RevisionId, SourceRecord, TagTarget, Tree, TreeEntry, TreeId,
+    WorkspaceId, WorkspaceRecord,
 };
-pub use izu_store::StoreOptions;
+pub use izu_store::{
+    ReclaimOutcome, ReclamationPlan, ReclamationReceipt, RetentionLease, StoreOptions,
+};
 pub use repository::{Repository, WorkspaceGuard, WorkspaceWriterLease};
 pub use types::*;

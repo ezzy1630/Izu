@@ -2,6 +2,7 @@ name: Verify
 
 on:
   push:
+    branches: [main, 'candidate-ci*']
   pull_request:
   workflow_dispatch:
 
@@ -13,30 +14,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
+  validation:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-14, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
       CARGO_BUILD_JOBS: 2
       RUST_BACKTRACE: 1
+      CARGO_HOME: ${{ github.workspace }}/.artifacts/local/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.artifacts/local/rustup
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.artifacts/local/target
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - name: Install the pinned toolchain
-        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --component rust-docs
       - name: Create isolated test storage
         run: |
-          izu_tmp="$RUNNER_TEMP/izu-tmp"
-          mkdir -p "$izu_tmp" .artifacts/ci
+          izu_tmp="$GITHUB_WORKSPACE/.artifacts/local/t"
+          mkdir -p "$izu_tmp" .artifacts/local/ci
           printf 'TMPDIR=%s\n' "$izu_tmp" >> "$GITHUB_ENV"
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Test host adapter interruption and cleanup
+        run: python3 -B scripts/tests/test_agent_host.py > .artifacts/local/ci/agent-host-tests.log 2>&1
+      - name: Test build identity provenance checks
+        run: python3 -B scripts/tests/test_native_build_identity.py
+      - name: Test disposable remote target guards without network access
+        run: python3 -B scripts/tests/test_remote_acceptance.py
       - name: Check all targets
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test the workspace
@@ -50,10 +60,67 @@ jobs:
       - name: Exercise the exact release executable
         shell: bash
         run: |
-          executable="$GITHUB_WORKSPACE/target/release/izu"
+          executable="$GITHUB_WORKSPACE/.artifacts/local/target/release/izu"
           digest="$(shasum -a 256 "$executable" | cut -d ' ' -f 1)"
-          target/release/izu-lab \
+          .artifacts/local/target/release/izu-lab \
             --executable "$executable" --expected-sha256 "$digest" \
             --source-root "$GITHUB_WORKSPACE" \
-            --output "$GITHUB_WORKSPACE/.artifacts/ci/cli-workflows.json" \
+            --output "$GITHUB_WORKSPACE/.artifacts/local/ci/cli-workflows.json" \
             --scratch-dir "$TMPDIR" acceptance --scope cli-workflows
+      - name: Retain validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: validation-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: |
+            .artifacts/local/ci
+            .artifacts/local/mcp-deadline-captures
+
+  packages:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 2
+      RUST_BACKTRACE: 1
+      CARGO_HOME: ${{ github.workspace }}/.artifacts/local/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.artifacts/local/rustup
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.artifacts/local/target
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install the pinned package toolchain and notices
+        run: rustup toolchain install 1.99.0 --profile minimal --component rust-docs
+      - name: Create isolated package storage
+        run: |
+          mkdir -p .artifacts/local/t .artifacts/local/ci
+          printf 'TMPDIR=%s/.artifacts/local/t\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - name: Select and record explicit native build tools
+        run: |
+          python3 -B scripts/native-build-identity.py prepare \
+            --source-root "$GITHUB_WORKSPACE" \
+            --output "$GITHUB_WORKSPACE/.artifacts/local/ci/native-build"
+          cat .artifacts/local/ci/native-build/build.env >> "$GITHUB_ENV"
+      - name: Fetch locked dependencies before offline builds
+        run: cargo fetch --locked
+      - name: Qualify two fresh reproducible extracted release packages
+        run: python3 -B scripts/qualify-release.py --output "$GITHUB_WORKSPACE/.artifacts/local/ci/packages" --offline
+      - name: Bind native tools and binary library requirements to packages
+        run: |
+          python3 -B scripts/native-build-identity.py finish \
+            --source-root "$GITHUB_WORKSPACE" \
+            --output "$GITHUB_WORKSPACE/.artifacts/local/ci/native-build" \
+            --qualification "$GITHUB_WORKSPACE/.artifacts/local/ci/packages/qualification.json"
+      - name: Retain package archives, acceptance and native identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packages-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: |
+            .artifacts/local/ci
+            .artifacts/local/mcp-deadline-captures

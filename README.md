@@ -8,11 +8,28 @@ The native history store works without Git, an account or a running service.
 Git interoperability is an optional adapter around an explicitly selected Git
 executable and transport.
 
+| Workflow | Git alone | izu |
+| --- | --- | --- |
+| Parallel work | Separate worktrees | Private workspaces with managed jobs, queues and concurrency limits |
+| Saving unfinished work | Explicit stash or commit | Checkpoints separate from commits, captured around managed execution |
+| Integrating changes | Merge; check policy supplied separately | Checks run on the exact merged candidate; stale or failed results block landing |
+| Revising a change | New commit identity | Stable change identity across immutable revisions |
+| Agent access | CLI; integrations supplied separately | Shared Rust engine exposed through CLI, typed JSON and MCP |
+| Dependency and build files | Reuse arranged separately | Verified prepared environments with private writable copies and copy-on-write cloning where supported |
+
+On filesystems that support copy-on-write cloning, prepared dependencies and build
+outputs can share underlying storage across private workspaces while remaining
+independently writable. Unsupported filesystems fall back to copying. Both Git
+worktrees and izu workspaces share their respective history stores; this is not a
+claim that izu uses less storage overall. See [prepared environments](docs/environments.md).
+
 **Development build:** this is an unpublished 0.1.0 build. Platform and workflow
 claims depend on the recorded executable and cases. Passing component tests do
 not establish end-to-end readiness; see the [development status](docs/status.md)
 for recorded results and remaining work, and [validation](docs/validation.md)
-for the verification procedure.
+for the verification procedure. Installation, upgrades and removal are covered in
+[distribution](docs/distribution.md); see the [unreleased notes](docs/release-notes.md)
+for capability and qualification limits.
 
 ## Build
 
@@ -28,9 +45,23 @@ Building also requires the platform's C compiler and linker for the TLS
 cryptography dependency. Git is needed only when using Git interoperability;
 native history operations do not launch Git.
 
-The current implementation targets macOS and Linux. Native filesystem barriers,
-process ownership and actual workflow tests determine support; a successful
-cross-compilation alone does not. Windows is not currently supported.
+Release qualification focuses on macOS ARM64 and x86-64, and Linux ARM64 and
+x86-64. Exact distribution/libc requirements and support depend on native
+workflow and extracted-package checks; cross-compilation alone does not qualify
+a target. Windows work is on hold and Windows is unsupported for this release.
+The owned repository, prepared cache and managed workspaces require native
+persistent storage. Docker Desktop shared-folder cache import is unsupported;
+container workflows use an owned persistent native volume. Its historical
+identity failure remains open; native ext4 passes do not diagnose it.
+
+The first-release Git boundary covers complete ordinary SHA-1 branch and tag
+graphs, modes, symlinks, merge ancestry and unchanged signature bytes; preserving
+a signature does not verify it. Submodules, LFS content download/upload and Git
+working-tree conversions are deferred. Explicit LFS pointer interchange preserves
+pointer bytes and warns that external content is unavailable. Attribute files
+are preserved, with committed-byte workspace semantics reported explicitly.
+Unsupported formats and content are rejected before native publication. See
+[Git interoperability](docs/git-interop.md) for the full restrictions.
 
 ## Source history
 

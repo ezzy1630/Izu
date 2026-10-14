@@ -12,10 +12,15 @@ mod admission;
 mod batch;
 mod durability;
 mod objects;
+mod reclamation;
 mod transaction;
 mod verify;
 
 pub use batch::{ObjectBatch, ObjectBatchReceipt, StagedObjectId};
+pub use reclamation::{
+    ExclusiveReclamationGuard, QuarantineRecoveryReport, ReclaimOutcome, ReclamationPlan,
+    ReclamationReceipt,
+};
 pub use transaction::{HeadExpectation, PublishOutcome, PublishReceipt, Transaction};
 pub use verify::{ObjectInfo, RecoveryReport, VerifyReport};
 
@@ -177,7 +182,21 @@ pub struct Store {
     pub(crate) options: StoreOptions,
 }
 
+/// Keeps all object names available throughout a multi-step read or preparation.
+/// Reclamation and recovery require the exclusive counterpart. Callers preparing
+/// objects outside a transaction retain this lease until publication or explicit
+/// abandonment; an ObjectId alone is not an active-reader or writer lease.
+#[derive(Debug)]
+pub struct RetentionLease {
+    _file: File,
+}
+
 impl Store {
+    pub fn retain(&self, cancel: &CancellationToken) -> Result<RetentionLease> {
+        Ok(RetentionLease {
+            _file: self.acquire_lock("temporary.lock", true, cancel)?,
+        })
+    }
     /// Creates a new store. Existing paths are never reinitialized or overwritten.
     /// A failed initialization may leave an incomplete directory for inspection.
     pub fn init(path: &Path, options: &StoreOptions) -> Result<Self> {
@@ -409,6 +428,10 @@ pub enum DurableBoundary {
     HeadReplaced,
     HeadDirectoriesKernelSynced,
     HeadDirectorySynced,
+    ReclamationQuarantineSynced,
+    ReclamationObjectRemoved,
+    ReclamationObjectsSynced,
+    ReclamationQuarantinePurged,
 }
 
 #[cfg(feature = "fault-injection")]

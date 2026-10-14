@@ -30,7 +30,7 @@ struct Fixture {
 }
 
 fn fixture() -> std::result::Result<Fixture, Box<dyn std::error::Error>> {
-    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/tmp");
+    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/local/tmp");
     fs::create_dir_all(&scratch)?;
     let directory = tempfile::tempdir_in(scratch.canonicalize()?)?;
     let primary = directory.path().join("primary");

@@ -12,6 +12,144 @@ use std::time::{Duration, Instant};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_izu");
 
+#[test]
+fn exact_reclamation_uses_engine_guards_and_preserves_history_and_source() {
+    use izu_engine::{CancellationToken, Repository, RepositoryOptions};
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("human.txt"),
+        b"retain unique human bytes\n",
+    )
+    .unwrap();
+    fixture.ok(&["init", "."]);
+    let cancel = CancellationToken::new();
+    let repo = Repository::open(&fixture.root, RepositoryOptions::default()).unwrap();
+    let head = repo.current_operation(&cancel).unwrap();
+    let first = repo
+        .put_blob(&mut &b"explicitly abandoned preparation"[..], 32, &cancel)
+        .unwrap();
+    let second = repo
+        .put_blob(&mut &b"other unique preparation"[..], 24, &cancel)
+        .unwrap();
+    let plan = fixture.ok(&["storage", "plan", &first.to_string()]);
+    assert_eq!(plan["selected"], json!([first]));
+    assert_eq!(
+        repo.blob(first, &cancel).unwrap(),
+        b"explicitly abandoned preparation"
+    );
+    // A crashed controller's durable intent blocks the actual CLI even after
+    // its kernel leases are released. The fixture launched no child process.
+    let writer = repo.lease_writer(repo.workspace_id(), &cancel).unwrap();
+    let token = writer.intent().token.clone();
+    drop(writer);
+    let (output, blocked) = fixture.run(&[
+        "storage",
+        "reclaim",
+        "--discard-unpublished",
+        &first.to_string(),
+    ]);
+    assert!(!output.status.success(), "{blocked}");
+    assert_eq!(blocked["outcome"]["error"]["code"], "conflict");
+    assert!(repo.blob(first, &cancel).is_ok());
+    repo.acknowledge_writer_stopped(repo.workspace_id(), &token, &cancel)
+        .unwrap();
+    let reclaimed = fixture.ok(&[
+        "storage",
+        "reclaim",
+        "--discard-unpublished",
+        &first.to_string(),
+    ]);
+    assert_eq!(reclaimed["selected"], json!([first]));
+    assert!(repo.blob(first, &cancel).is_err());
+    assert_eq!(
+        repo.blob(second, &cancel).unwrap(),
+        b"other unique preparation"
+    );
+    let (output, rejected) = fixture.run(&[
+        "storage",
+        "reclaim",
+        "--discard-unpublished",
+        &head.to_string(),
+    ]);
+    assert!(!output.status.success(), "{rejected}");
+    assert!(repo.operation(head, &cancel).is_ok());
+    assert_eq!(
+        fs::read(fixture.root.join("human.txt")).unwrap(),
+        b"retain unique human bytes\n"
+    );
+    fixture.ok(&["recover"]);
+    fixture.ok(&["verify"]);
+}
+
+#[test]
+fn git_clone_materializes_default_branch_and_preserves_occupied_destination() {
+    let fixture = Fixture::new();
+    let upstream = fixture.root.join("upstream");
+    fs::create_dir(&upstream).expect("owned upstream");
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&upstream)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=owned fixture",
+                "-c",
+                "user.email=fixture@izu.invalid",
+            ])
+            .args(args)
+            .output()
+            .expect("explicit installed Git fixture tool");
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "--initial-branch=main"]);
+    fs::write(upstream.join("source.txt"), b"adopt this source\n").expect("upstream bytes");
+    git(&["add", "source.txt"]);
+    git(&["commit", "-m", "Owned upstream source"]);
+    let destination = fixture.root.join("adopted");
+    let receipt = fixture.ok(&[
+        "git",
+        "clone",
+        upstream.to_str().unwrap(),
+        destination.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        fs::read(destination.join("source.txt")).unwrap(),
+        b"adopt this source\n"
+    );
+    assert!(!destination.join(".git").exists());
+    let context = json!({"repository":destination,"workspace":null});
+    let (output, inspected) =
+        fixture.json(&json!({"schema_version":1,"operation":{"kind":"inspect","context":context}}));
+    assert!(output.status.success(), "{inspected}");
+    assert_eq!(inspected["outcome"]["result"]["data"], receipt["workspace"]);
+    let occupied = fixture.root.join("occupied");
+    fs::create_dir(&occupied).unwrap();
+    fs::write(occupied.join("human.txt"), b"preserve human work\n").unwrap();
+    let (output, rejected) = fixture.run(&[
+        "git",
+        "clone",
+        upstream.to_str().unwrap(),
+        occupied.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success(), "{rejected}");
+    assert!(!occupied.join(".izu").exists());
+    assert_eq!(
+        fs::read(occupied.join("human.txt")).unwrap(),
+        b"preserve human work\n"
+    );
+    let (output, verified) = fixture.json(&json!({"schema_version":1,"operation":{"kind":"verify","context":{"repository":destination,"workspace":null}}}));
+    assert!(output.status.success(), "{verified}");
+}
+
 struct OwnedChildren(Vec<Option<Child>>);
 impl Drop for OwnedChildren {
     fn drop(&mut self) {
@@ -22,6 +160,141 @@ impl Drop for OwnedChildren {
             let _ = child.wait();
         }
     }
+}
+
+#[test]
+fn native_tags_and_explicit_metadata_migration_use_real_cli_and_bundle_paths() {
+    use izu_engine::{CancellationToken, OperationId, Repository, RepositoryOptions};
+    use izu_model::{ObjectKind, encode_metadata};
+    use izu_store::{HeadExpectation, PublishOutcome, Store, StoreOptions};
+    let fixture = Fixture::new();
+    fixture.ok(&["init", "."]);
+    fs::write(
+        fixture.root.join("human.txt"),
+        b"preserve original tagged source",
+    )
+    .unwrap();
+    let committed = fixture.ok(&["commit", "-m", "tagged source"]);
+    let revision = text(&committed, "revision");
+    fixture.ok(&[
+        "tags",
+        "set",
+        "release/v1",
+        "--revision",
+        &revision,
+        "--expect-absent",
+    ]);
+    let tags = fixture.ok(&["tags", "list"]);
+    assert_eq!(
+        tags["release/v1"]["target"],
+        json!({"kind":"revision","revision":revision})
+    );
+    let expectation = fixture.home.join("exact-tag.json");
+    fs::write(
+        &expectation,
+        serde_json::to_vec(&tags["release/v1"]).unwrap(),
+    )
+    .unwrap();
+    let (stale, body) = fixture.run(&[
+        "tags",
+        "set",
+        "release/v1",
+        "--revision",
+        &revision,
+        "--expect-absent",
+    ]);
+    assert!(!stale.status.success());
+    assert_eq!(body["outcome"]["error"]["code"], "stale_expectation");
+    let bundle = fixture.home.join("tagged.izub");
+    fixture.ok(&["bundle", "create", bundle.to_str().unwrap()]);
+    let restored = fixture.home.join("restored");
+    fixture.ok(&[
+        "bundle",
+        "restore",
+        bundle.to_str().unwrap(),
+        restored.to_str().unwrap(),
+    ]);
+    let restored_repo = Repository::open(&restored, RepositoryOptions::default()).unwrap();
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        restored_repo.view(&cancel).unwrap().tags[&izu_model::RefName::new("release/v1").unwrap()]
+            .target,
+        izu_model::TagTarget::Revision {
+            revision: revision.parse().unwrap()
+        }
+    );
+    restored_repo.verify(&cancel).unwrap();
+    fixture.ok(&[
+        "tags",
+        "delete",
+        "release/v1",
+        "--expect-json",
+        expectation.to_str().unwrap(),
+    ]);
+    // Put a v1 operation into the owned fixture using the original store API.
+    // The CLI must not silently migrate or erase the original operation bytes.
+    let repo = Repository::open(&fixture.root, RepositoryOptions::default()).unwrap();
+    let store = Store::open(repo.metadata_path(), &StoreOptions::default()).unwrap();
+    let before = repo.current_operation(&cancel).unwrap();
+    let mut legacy = repo.operation(before, &cancel).unwrap();
+    legacy.parent = Some(before);
+    legacy.view.metadata_version = None;
+    let raw = encode_metadata(&legacy, repo.limits()).unwrap();
+    let old = OperationId::from_object(store.put(ObjectKind::Operation, &raw, &cancel).unwrap());
+    let lease = store.begin(HeadExpectation::At(before), &cancel).unwrap();
+    assert!(matches!(
+        lease.publish(old, &cancel).unwrap(),
+        PublishOutcome::Durable(_)
+    ));
+    assert_eq!(fixture.ok(&["format", "inspect"])["metadata_version"], 1);
+    let (refused, _) = fixture.run(&[
+        "tags",
+        "set",
+        "new",
+        "--revision",
+        &revision,
+        "--expect-absent",
+    ]);
+    assert!(!refused.status.success());
+    let (wrong, _) = fixture.run(&[
+        "format",
+        "migrate",
+        "--to",
+        "2",
+        "--expect-operation",
+        &before.to_string(),
+    ]);
+    assert!(!wrong.status.success());
+    let migration = fixture.ok(&[
+        "format",
+        "migrate",
+        "--to",
+        "2",
+        "--expect-operation",
+        &old.to_string(),
+    ]);
+    assert_eq!(migration["metadata_version"], 2);
+    let current = repo.current_operation(&cancel).unwrap();
+    assert_eq!(repo.operation(current, &cancel).unwrap().parent, Some(old));
+    assert_eq!(
+        store
+            .get(old.object_id(), ObjectKind::Operation, &cancel)
+            .unwrap(),
+        raw
+    );
+    fixture.ok(&[
+        "tags",
+        "set",
+        "new",
+        "--revision",
+        &revision,
+        "--expect-absent",
+    ]);
+    assert_eq!(
+        fs::read(fixture.root.join("human.txt")).unwrap(),
+        b"preserve original tagged source"
+    );
+    fixture.ok(&["verify"]);
 }
 
 struct Fixture {
@@ -843,7 +1116,17 @@ fn environment_cli_trust_materialization_and_bound_starting_checks_are_exact() {
     let cache_parent = fixture.root.join(".izu/environments/v1/artifacts");
     let artifact = cache_parent.join(text(&binding, "key"));
     let retained_artifact = cache_parent.join("fixture-retained-exact-artifact");
+    // The controlled missing-cache fixture moves its own sealed directory.
+    // Some native macOS runners require owner write permission for this rename;
+    // restore the original seal before invoking any product operation.
+    let artifact_seal = fs::metadata(&artifact)
+        .expect("owned artifact seal")
+        .permissions();
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o700))
+        .expect("prepare owned fixture rename");
     fs::rename(&artifact, &retained_artifact).expect("hide only owned cache artifact");
+    fs::set_permissions(&retained_artifact, artifact_seal.clone())
+        .expect("retain original artifact seal");
     let (missing_cache, missing_receipt) =
         fixture.run(&["check", &candidate, "--check", "prepared"]);
     assert!(!missing_cache.status.success(), "{missing_receipt}");
@@ -854,7 +1137,10 @@ fn environment_cli_trust_materialization_and_bound_starting_checks_are_exact() {
         Some(5),
         "an absent starting environment must not reuse an old pass"
     );
+    fs::set_permissions(&retained_artifact, fs::Permissions::from_mode(0o700))
+        .expect("prepare owned fixture restoration");
     fs::rename(&retained_artifact, &artifact).expect("restore exact retained fixture artifact");
+    fs::set_permissions(&artifact, artifact_seal).expect("restore exact artifact seal");
     let rechecked = fixture.ok(&["check", &candidate, "--check", "prepared"]);
     assert_ne!(checked["evidence"], rechecked["evidence"]);
     fixture.ok(&["land", &candidate]);
@@ -1455,7 +1741,9 @@ impl McpClient {
                 return Ok(reply);
             }
             if Instant::now() >= deadline {
-                return Err(self.diagnostic("response timeout"));
+                let mut failure = self.diagnostic("response timeout");
+                failure["native_capture"] = self.capture_deadline();
+                return Err(failure);
             }
             if self.child.try_wait().expect("child status").is_some() && self.output.is_none() {
                 return Err(self.diagnostic("child exited without a complete response"));
@@ -1464,6 +1752,123 @@ impl McpClient {
                 return Err(self.diagnostic(&error));
             }
         }
+    }
+
+    // Capture only after the response bound has failed, while the exact child
+    // and all original pipe endpoints are still alive. Cleanup follows capture.
+    fn capture_deadline(&mut self) -> Value {
+        self.capture_deadline_with_script(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scripts/mcp-deadline-diagnostics.py"),
+        )
+    }
+
+    fn capture_deadline_with_script(&mut self, script: &Path) -> Value {
+        self.capture_deadline_command(script, None)
+    }
+
+    fn capture_deadline_command(&mut self, script: &Path, probe: Option<&str>) -> Value {
+        use izu_process::{BaseEnvironment, CommandSpec, RunOptions, WorkerLauncher};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = root
+            .join(".artifacts/local/mcp-deadline-captures")
+            .join(format!(
+                "{}-{}-{}",
+                std::process::id(),
+                self.child.id(),
+                self.started.elapsed().as_nanos()
+            ));
+        let mut report = json!({"parent":std::process::id(),"child":self.child.id(),
+            "before_cleanup":true,"status":"helper_not_started","commands":[],
+            "owner_started_unix_ns":std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).expect("clock after epoch").as_nanos().to_string()});
+        fs::create_dir_all(&directory).expect("owned diagnostic directory");
+        let save = |value: &Value| {
+            let temporary = directory.join("capture-owner.tmp");
+            fs::write(&temporary, serde_json::to_vec(value).expect("capture JSON"))
+                .expect("capture progress");
+            fs::rename(temporary, directory.join("capture.json")).expect("atomic capture progress");
+        };
+        save(&report);
+        let mut command = CommandSpec::new("/usr/bin/python3");
+        command
+            .arg("-B")
+            .arg(script)
+            .arg("--parent")
+            .arg(std::process::id().to_string())
+            .arg("--child")
+            .arg(self.child.id().to_string())
+            .arg("--output")
+            .arg(&directory);
+        if let Some(probe) = probe {
+            command.arg("--test-probe").arg(probe);
+        }
+        let worker = WorkerLauncher {
+            executable: fs::canonicalize(BINARY).expect("exact Cargo CLI worker"),
+            prefix_args: vec!["__process-worker".into()],
+        };
+        // The original 8 s total capture allowance includes group cleanup.
+        // run owns the unreaped worker identity and stops its whole group.
+        let options = RunOptions {
+            timeout: Duration::from_secs(7),
+            cleanup_timeout: Duration::from_secs(1),
+            stdout_limit: MCP_CAPTURE_BYTES,
+            stderr_limit: MCP_CAPTURE_BYTES,
+            base_environment: BaseEnvironment::Inherit,
+            ..RunOptions::default()
+        };
+        let outcome = izu_process::run(&command, &[], &options, &worker, &|| false);
+        // No helper can still replace progress after successful group cleanup.
+        // Keep helper exceptions/startup output even when no Python report ran.
+        match fs::read(directory.join("capture.json"))
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+        {
+            Ok(value) => report = value,
+            Err(error) => report["progress_read_error"] = json!(error),
+        }
+        match outcome {
+            Ok(outcome) => {
+                fs::write(directory.join("helper.stdout"), &outcome.stdout.bytes)
+                    .expect("helper stdout capture");
+                fs::write(directory.join("helper.stderr"), &outcome.stderr.bytes)
+                    .expect("helper stderr capture");
+                report["owner"] = json!({"termination":format!("{:?}",outcome.termination),
+                    "exit_code":outcome.exit.and_then(|s|s.code()),"cleanup":format!("{:?}",outcome.cleanup),
+                    "cleanup_confirmed":outcome.cleanup.cooperative_stop_succeeded(),
+                    "elapsed_seconds":outcome.elapsed.as_secs_f64(),
+                    "stdout_dropped_bytes":outcome.stdout.dropped,"stderr_dropped_bytes":outcome.stderr.dropped});
+                if outcome.termination != izu_process::Termination::Completed
+                    || report["status"] != "completed"
+                {
+                    for row in report["commands"]
+                        .as_array_mut()
+                        .expect("command progress list")
+                    {
+                        if matches!(row["state"].as_str(), Some("starting" | "running")) {
+                            row["state"] = json!("interrupted");
+                        } else if row["state"] == "pending" {
+                            row["state"] = json!("not_started");
+                        }
+                    }
+                }
+            }
+            Err(error) => report["owner"] = json!({"launch_error":error.to_string()}),
+        }
+        // The helper owns capture.json while its group might still be alive.
+        // Keep the owner's result separately so an uncertain cleanup cannot
+        // race away the only record of that uncertainty.
+        fs::write(
+            directory.join("capture-owner-result.json"),
+            serde_json::to_vec(&report["owner"]).expect("capture owner JSON"),
+        )
+        .expect("capture owner result");
+        if report["owner"]["cleanup_confirmed"] == true
+            || report["owner"]["launch_error"].is_string()
+        {
+            save(&report);
+        }
+        json!({"directory":directory,"owner":report["owner"]})
     }
 
     fn event(&mut self, name: &str, data: Value) {
@@ -1684,6 +2089,65 @@ fn mcp_timeout_diagnostics_retain_partial_stdout_stderr_request_and_phase() {
     assert_eq!(failure["reason"], "response timeout");
     assert!(failure["child_status"].is_null());
     assert_eq!(failure["before_cleanup"], true);
+    let capture = Path::new(
+        failure["native_capture"]["directory"]
+            .as_str()
+            .expect("deadline capture path"),
+    );
+    let report: Value = serde_json::from_slice(
+        &fs::read(capture.join("capture.json")).expect("native capture report"),
+    )
+    .expect("capture JSON");
+    assert_eq!(report["child"], client.child.id());
+    assert_eq!(report["child_owned_at_start"], true);
+    assert!(
+        report["commands"]
+            .as_array()
+            .expect("native commands")
+            .iter()
+            .any(|row| row["kind"] == "pipe_ownership")
+    );
+    assert!(
+        report["commands"]
+            .as_array()
+            .expect("native commands")
+            .iter()
+            .any(|row| row["kind"] == "child_stack")
+    );
+    assert!(
+        client
+            .child
+            .try_wait()
+            .expect("still-owned child")
+            .is_none()
+    );
+    assert_eq!(report["owner"]["cleanup_confirmed"], true);
+    // A pending plan is not a capture attempt. Preserve native failures and
+    // permission errors, but require real launches while the transport lives.
+    for kind in ["pipe_ownership", "child_stack"] {
+        let row = report["commands"]
+            .as_array()
+            .expect("native commands")
+            .iter()
+            .find(|row| row["kind"] == kind)
+            .expect("native capture attempt");
+        assert_eq!(row["attempted"], true, "{row}");
+        assert!(
+            (row["pid"].as_u64().is_some()
+                && matches!(row["state"].as_str(), Some("completed" | "timed_out")))
+                || (row["state"] == "failed" && row["error"].as_str().is_some()),
+            "{row}"
+        );
+        if cfg!(target_os = "macos") && kind == "child_stack" && row["exit_code"] == 0 {
+            let stack =
+                fs::read_to_string(capture.join("child_stack.stdout")).expect("native stack bytes");
+            assert!(
+                stack.contains("read  (in libsystem_kernel.dylib)"),
+                "{stack}"
+            );
+        }
+    }
+
     assert_eq!(
         diagnostic_bytes(&failure["partial_frame_tail_bytes"]),
         b"{\"jsonrpc\":\"2.0\",\"id\":701,\"res"
@@ -1705,6 +2169,138 @@ fn mcp_timeout_diagnostics_retain_partial_stdout_stderr_request_and_phase() {
             .expect("bounded fixture exit")
             .success()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn mcp_diagnostic_slow_startup_retains_report_and_helper_stderr() {
+    let fixture = Fixture::new();
+    let child = Command::new("/usr/bin/python3")
+        .args(["-B", "-c", "import sys; sys.stdin.buffer.read()"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("owned live transport");
+    let mut client = McpClient::from_child(child);
+    let wrapper = fixture.root.join("slow-diagnostic.py");
+    fs::write(
+        &wrapper,
+        "import os,time\nos.write(2,b'controlled slow diagnostic startup\\n')\ntime.sleep(30)\n",
+    )
+    .expect("slow helper fixture");
+    let failure = client.capture_deadline_with_script(&wrapper);
+    let directory = Path::new(failure["directory"].as_str().expect("capture directory"));
+    let report: Value = serde_json::from_slice(
+        &fs::read(directory.join("capture.json")).expect("startup timeout still retains report"),
+    )
+    .expect("capture JSON");
+    assert_eq!(report["child"], client.child.id());
+    assert_eq!(report["status"], "helper_not_started");
+    assert_eq!(report["owner"]["termination"], "TimedOut");
+    assert_eq!(report["owner"]["cleanup_confirmed"], true);
+    assert!(
+        fs::read_to_string(directory.join("helper.stderr"))
+            .expect("retained helper stderr")
+            .contains("controlled slow diagnostic startup")
+    );
+    assert!(
+        client
+            .child
+            .try_wait()
+            .expect("transport alive before cleanup")
+            .is_none()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendants() {
+    let fixture = Fixture::new();
+    let child = Command::new("/usr/bin/python3")
+        .args(["-B", "-c", "import sys; sys.stdin.buffer.read()"])
+        .current_dir(&fixture.root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("owned live transport");
+    let mut client = McpClient::from_child(child);
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/mcp-deadline-diagnostics.py");
+    for probe in ["slow-command", "failed-command", "backpressure-command"] {
+        let failure = client.capture_deadline_command(&script, Some(probe));
+        let directory = Path::new(failure["directory"].as_str().expect("capture directory"));
+        let report: Value = serde_json::from_slice(
+            &fs::read(directory.join("capture.json")).expect("native command report"),
+        )
+        .expect("capture JSON");
+        assert_eq!(report["status"], "completed", "{report}");
+        assert_eq!(report["owner"]["cleanup_confirmed"], true, "{report}");
+        let rows = report["commands"].as_array().expect("command progress");
+        for kind in ["pipe_ownership", "child_stack", "parent_stack"] {
+            assert!(
+                rows.iter()
+                    .any(|row| row["kind"] == kind && row["pid"].as_u64().is_some()),
+                "{report}"
+            );
+        }
+        let row = rows
+            .iter()
+            .find(|row| row["kind"] == "parent_stack")
+            .expect("controlled native command");
+        if probe != "failed-command" {
+            assert_eq!(row["state"], "timed_out", "{row}");
+            let pid = fs::read_to_string(directory.join("native-descendant.pid"))
+                .expect("actual native descendant launched");
+            let status = Command::new("/bin/ps")
+                .args(["-p", pid.trim(), "-o", "pid="])
+                .output()
+                .expect("descendant absence observation");
+            assert!(
+                status.stdout.is_empty(),
+                "native descendant survived: {status:?}"
+            );
+            if probe == "backpressure-command" {
+                for stream in ["stdout", "stderr"] {
+                    assert_eq!(
+                        fs::metadata(directory.join(format!("parent_stack.{stream}")))
+                            .expect("bounded native output")
+                            .len(),
+                        1024 * 1024
+                    );
+                    assert!(
+                        row[format!("{stream}_dropped_bytes")]
+                            .as_u64()
+                            .expect("native output overflow count")
+                            >= 1024 * 1024,
+                        "{row}"
+                    );
+                }
+            } else {
+                assert!(
+                    fs::read_to_string(directory.join("parent_stack.stdout"))
+                        .expect("retained command stdout")
+                        .contains("controlled slow native command")
+                );
+            }
+        } else {
+            assert_eq!(row["state"], "completed");
+            assert_eq!(row["exit_code"], 17);
+            assert!(
+                fs::read_to_string(directory.join("parent_stack.stderr"))
+                    .expect("retained command stderr")
+                    .contains("controlled native command failure")
+            );
+        }
+        assert!(
+            client
+                .child
+                .try_wait()
+                .expect("transport alive before cleanup")
+                .is_none()
+        );
+    }
 }
 
 #[cfg(unix)]

@@ -173,6 +173,13 @@ pub struct RefUpdate {
     pub expected: Option<RevisionId>,
     pub new: Option<RevisionId>,
 }
+/// Exact-value lease prevents concurrent tag replacement from being overwritten.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TagUpdate {
+    pub name: RefName,
+    pub expected: Option<NativeTag>,
+    pub new: Option<NativeTag>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RefExpectation {
     pub name: RefName,

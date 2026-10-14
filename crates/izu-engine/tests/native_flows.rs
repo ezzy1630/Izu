@@ -21,7 +21,7 @@ fn test_tempdir() -> TempDir {
         .unwrap()
         .parent()
         .unwrap();
-    let root = lane.join(".artifacts/tmp");
+    let root = lane.join(".artifacts/local/tmp");
     fs::create_dir_all(&root).unwrap();
     tempfile::tempdir_in(root).unwrap()
 }

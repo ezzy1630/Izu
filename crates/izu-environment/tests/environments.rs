@@ -512,8 +512,11 @@ fn known_volatile_private_workspace_is_refused_before_registration_or_environmen
         operation_before
     );
     assert_eq!(fixture.repo.view(&cancel).unwrap(), view_before);
-    assert!(fs::symlink_metadata(&requested_root).unwrap().is_dir());
-    assert!(fs::read_dir(&requested_root).unwrap().next().is_none());
+    assert_eq!(
+        fs::symlink_metadata(&requested_root).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound,
+        "volatile storage must be refused before creating the requested workspace",
+    );
     for path in [".izu", ".izu-recovery/environment-staging"] {
         assert_eq!(
             fs::symlink_metadata(requested_root.join(path))
@@ -981,6 +984,70 @@ fn cache_digest_and_same_content_inode_replacements_are_rejected() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn same_content_manifest_replacement_is_refused_without_refreshing_ready() {
+    let fixture = Fixture::new();
+    let recipe = fixture.recipe();
+    let cache = fixture.cache();
+    import(&cache, &recipe, &fixture.prepared, SharingPolicy::Copy);
+    let artifact = cache
+        .root_path()
+        .join("artifacts")
+        .join(recipe.key().to_string());
+    let manifest = artifact.join("manifest.json");
+    let retained = fixture.temp.path().join("retained-original-manifest");
+    let original = fs::File::open(&manifest).unwrap();
+    let original_metadata = original.metadata().unwrap();
+    let bytes = fs::read(&manifest).unwrap();
+    let ready = fs::read(artifact.join("READY")).unwrap();
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::rename(&manifest, &retained).unwrap();
+    fs::write(&manifest, &bytes).unwrap();
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o444)).unwrap();
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o555)).unwrap();
+    let replacement = fs::metadata(&manifest).unwrap();
+    assert_ne!(
+        (original_metadata.dev(), original_metadata.ino()),
+        (replacement.dev(), replacement.ino())
+    );
+    let before_entries = fs::read_dir(cache.root_path().join("artifacts"))
+        .unwrap()
+        .count();
+    for result in [
+        cache.status(&recipe, &CancellationToken::new()).map(|_| ()),
+        cache
+            .binding(&recipe, &CancellationToken::new())
+            .map(|_| ()),
+        cache
+            .import_quiescent(
+                &recipe,
+                &fixture.prepared,
+                QuiescenceAcknowledgement::CallerConfirmsNoWriters,
+                SharingPolicy::Copy,
+                &CancellationToken::new(),
+            )
+            .map(|_| ()),
+    ] {
+        assert!(matches!(result, Err(EnvironmentError::Corrupt(message))
+            if message.starts_with("manifest inode/device identity differs:")));
+    }
+    assert_eq!(fs::read(artifact.join("READY")).unwrap(), ready);
+    assert_eq!(fs::read(&manifest).unwrap(), bytes);
+    assert_eq!(fs::read(&retained).unwrap(), bytes);
+    let retained_metadata = original.metadata().unwrap();
+    assert_eq!(
+        (retained_metadata.dev(), retained_metadata.ino()),
+        (original_metadata.dev(), original_metadata.ino())
+    );
+    assert_eq!(
+        fs::read_dir(cache.root_path().join("artifacts"))
+            .unwrap()
+            .count(),
+        before_entries
+    );
+}
+
 #[test]
 fn recipe_key_changes_for_each_declared_identity_and_command() {
     let original = recipe(Digest::of_bytes(b"source"));
@@ -1279,6 +1346,84 @@ fn bounded_input_cancel_disk_pressure_and_incomplete_stages() {
         fs::read(fixture.prepared.join("node_modules/pkg/tool")).unwrap(),
         b"dependency-original\n"
     );
+}
+
+#[test]
+fn retry_after_incomplete_preparation_preserves_unique_stage_and_binding() {
+    let fixture = Fixture::new();
+    let recipe = fixture.recipe();
+    let root = fixture.temp.path().join("retry-cache");
+    let limited = EnvironmentCache::open(
+        &root,
+        EnvironmentLimits {
+            max_manifest_bytes: 64,
+            ..test_limits()
+        },
+    )
+    .unwrap();
+    let stage = match limited.import_quiescent(
+        &recipe,
+        &fixture.prepared,
+        QuiescenceAcknowledgement::CallerConfirmsNoWriters,
+        SharingPolicy::Copy,
+        &CancellationToken::new(),
+    ) {
+        Err(EnvironmentError::PreparationIncomplete { stage, .. }) => stage,
+        other => panic!("expected retained incomplete preparation, got {other:?}"),
+    };
+    // A retained stage can hold unique diagnostic or recovery work. Retry must
+    // neither adopt it as ready nor reclaim it merely because its lease ended.
+    let unique = stage.join("unique-recovery-work");
+    fs::write(&unique, b"retain this exact unfinished work\n").unwrap();
+    let retained_file = stage.join("payload/0/.bin/tool");
+    let retained_link = fs::read_link(&retained_file).unwrap();
+    let retained_payload = stage.join("payload/0/pkg/tool");
+    let retained_bytes = fs::read(&retained_payload).unwrap();
+    #[cfg(unix)]
+    let stage_identity = {
+        let metadata = fs::metadata(&stage).unwrap();
+        (metadata.dev(), metadata.ino())
+    };
+    drop(limited);
+
+    let cache = EnvironmentCache::open(&root, test_limits()).unwrap();
+    assert!(matches!(
+        cache.status(&recipe, &CancellationToken::new()).unwrap(),
+        CacheStatus::Incomplete {
+            retained_stages: 1,
+            ..
+        }
+    ));
+    let receipt = import(&cache, &recipe, &fixture.prepared, SharingPolicy::Copy);
+    assert!(!receipt.reused);
+    assert_eq!(
+        fs::read(&unique).unwrap(),
+        b"retain this exact unfinished work\n"
+    );
+    assert_eq!(fs::read(&retained_payload).unwrap(), retained_bytes);
+    assert_eq!(fs::read_link(&retained_file).unwrap(), retained_link);
+    #[cfg(unix)]
+    {
+        let metadata = fs::metadata(&stage).unwrap();
+        assert_eq!((metadata.dev(), metadata.ino()), stage_identity);
+    }
+    let binding = cache.binding(&recipe, &CancellationToken::new()).unwrap();
+    materialize_bound(&fixture, &cache, &binding, &fixture.first);
+    assert_eq!(
+        fs::read(fixture.temp.path().join("one/node_modules/pkg/tool")).unwrap(),
+        b"dependency-original\n"
+    );
+    assert!(
+        !fixture
+            .temp
+            .path()
+            .join("one/unique-recovery-work")
+            .exists()
+    );
+    assert!(matches!(
+        cache.status(&recipe, &CancellationToken::new()).unwrap(),
+        CacheStatus::Ready(summary) if summary == receipt.artifact
+    ));
 }
 
 #[test]

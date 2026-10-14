@@ -11,14 +11,14 @@ use crate::{
 };
 
 macro_rules! record {
-    ($(#[$meta:meta])* $name:ident, $raw:ident, $raw_name:literal, {$($field:ident: $ty:ty),* $(,)?}) => {
+    ($(#[$meta:meta])* $name:ident, $raw:ident, $raw_name:literal, {$( $(#[$field_meta:meta])* $field:ident: $ty:ty),* $(,)?}) => {
         #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
         #[serde(deny_unknown_fields, try_from = $raw_name)]
         $(#[$meta])*
-        pub struct $name { $(pub $field: $ty,)* }
+        pub struct $name { $( $(#[$field_meta])* pub $field: $ty,)* }
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct $raw { $($field: $ty,)* }
+        struct $raw { $( $(#[$field_meta])* $field: $ty,)* }
         impl TryFrom<$raw> for $name {
             type Error = ModelError;
             fn try_from(raw: $raw) -> Result<Self, Self::Error> {
@@ -388,7 +388,79 @@ impl Validate for WorkspaceRecord {
     }
 }
 
+/// Explicit metadata extension. Object framing remains IZUOBJ1; omitted means
+/// the original schema, whose canonical bytes and IDs are preserved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataVersion {
+    V2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TagTarget {
+    Revision { revision: RevisionId },
+    Tree { tree: TreeId },
+    Blob { blob: ObjectId },
+}
+impl Validate for TagTarget {
+    fn validate(&self, _: &Limits) -> Result<(), ModelError> {
+        Ok(())
+    }
+}
+
+record!(GitTagAnnotation, RawGitTagAnnotation, "RawGitTagAnnotation", {
+    object_id: String,
+    raw: ObjectId,
+});
+impl Validate for GitTagAnnotation {
+    fn validate(&self, _: &Limits) -> Result<(), ModelError> {
+        validate_git_id(&self.object_id)
+    }
+}
+
+record!(GitTagOrigin, RawGitTagOrigin, "RawGitTagOrigin", {
+    target_object_id: String,
+    // Ordered from outermost annotation to the ultimate target. Signatures
+    // remain opaque bytes; preservation is not verification.
+    annotations: Vec<GitTagAnnotation>,
+});
+impl Validate for GitTagOrigin {
+    fn validate(&self, limits: &Limits) -> Result<(), ModelError> {
+        validate_git_id(&self.target_object_id)?;
+        check_len("tag annotation depth", self.annotations.len(), 64)?;
+        let mut seen = BTreeSet::new();
+        for annotation in &self.annotations {
+            annotation.validate(limits)?;
+            if !seen.insert(&annotation.object_id) {
+                return Err(ModelError::InvalidMetadata {
+                    reason: "duplicate tag annotation",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+record!(NativeTag, RawNativeTag, "RawNativeTag", {
+    target: TagTarget,
+    origin: Option<GitTagOrigin>,
+});
+impl Validate for NativeTag {
+    fn validate(&self, limits: &Limits) -> Result<(), ModelError> {
+        self.target.validate(limits)?;
+        if let Some(origin) = &self.origin {
+            origin.validate(limits)?;
+        }
+        Ok(())
+    }
+}
+
 record!(#[derive(Default)] RepositoryView, RawRepositoryView, "RawRepositoryView", {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata_version: Option<MetadataVersion>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    tags: BTreeMap<RefName, NativeTag>,
     changes: BTreeMap<ChangeId, ChangeState>,
     refs: BTreeMap<RefName, RevisionId>,
     workspaces: BTreeMap<WorkspaceId, WorkspaceRecord>,
@@ -398,6 +470,15 @@ record!(#[derive(Default)] RepositoryView, RawRepositoryView, "RawRepositoryView
 
 impl Validate for RepositoryView {
     fn validate(&self, limits: &Limits) -> Result<(), ModelError> {
+        if !self.tags.is_empty() && self.metadata_version != Some(MetadataVersion::V2) {
+            return Err(ModelError::InvalidMetadata {
+                reason: "tags require metadata version two",
+            });
+        }
+        check_len("tags", self.tags.len(), limits.max_refs)?;
+        for tag in self.tags.values() {
+            tag.validate(limits)?;
+        }
         check_len("logical changes", self.changes.len(), limits.max_changes)?;
         check_len("references", self.refs.len(), limits.max_refs)?;
         check_len("workspaces", self.workspaces.len(), limits.max_workspaces)?;

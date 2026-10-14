@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::Path;
 use std::process::{ChildStdin, Command};
@@ -198,6 +199,10 @@ impl Runtime {
             return Err(RuntimeError::Capacity("durable job history is full".into()));
         }
         let mut next = self.state.clone();
+        if request.cooperative_interrupt.is_some() {
+            next.required_features
+                .insert(crate::registry::RegistryFeature::CooperativeInterruptV1);
+        }
         match next
             .workspaces
             .iter_mut()
@@ -593,7 +598,11 @@ impl Runtime {
                     };
                     self.finish_owned(id, finish)?;
                 } else if active.deadline.is_some_and(|deadline| {
-                    Instant::now().saturating_duration_since(deadline) >= Duration::from_secs(10)
+                    let elapsed = Instant::now().checked_duration_since(deadline);
+                    elapsed.is_some_and(|elapsed| {
+                        self.state.jobs[id].request.cooperative_interrupt.is_some()
+                            || elapsed >= Duration::from_secs(10)
+                    })
                 }) {
                     self.finish_owned(id, Finish::Cancel(CancellationReason::Deadline))?;
                 }
@@ -770,22 +779,29 @@ impl Runtime {
             }
         };
         let duration = Duration::from_millis(job.request.timeout_ms);
-        if Instant::now().checked_add(duration).is_none()
-            || i64::try_from(job.request.timeout_ms)
+        // Spawn admission has the job's existing timeout budget. Execution's
+        // separate deadline still starts only when the writer is released.
+        let launch_deadline = Instant::now().checked_add(duration).filter(|_| {
+            i64::try_from(job.request.timeout_ms)
                 .ok()
                 .and_then(|ms| started.checked_add(ms))
-                .is_none()
-        {
+                .is_some()
+        });
+        let Some(launch_deadline) = launch_deadline else {
             self.fail_unlaunched(id, lease, "execution deadline overflow".into())?;
             return Err(RuntimeError::Invalid("execution deadline overflow".into()));
-        }
+        };
         let mut command = Command::new(&self.config.worker_executable);
         command
             .args(&self.config.worker_prefix)
             .arg(&ticket)
             .current_dir(job.request.workspace.cwd());
-        let mut child = match crate::os::spawn_group(&mut command) {
+        let mut child = match crate::os::spawn_group(&mut command, launch_deadline, cancel) {
             Ok(child) => child,
+            Err(izu_process::RunError::Cancelled) => {
+                self.finish_unlaunched(id, lease, None)?;
+                return Err(RuntimeError::Cancelled);
+            }
             Err(error) => {
                 self.fail_unlaunched(id, lease, error.to_string())?;
                 return Ok(());
@@ -870,7 +886,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn finish_owned(&mut self, id: &JobId, finish: Finish) -> Result<(), RuntimeError> {
+    fn finish_owned(&mut self, id: &JobId, mut finish: Finish) -> Result<(), RuntimeError> {
         let mut active = self
             .active
             .remove(id)
@@ -885,8 +901,74 @@ impl Runtime {
                 ));
             }
         };
+        let policy = self.state.jobs[id].request.cooperative_interrupt;
+        let mut cooperation_failure = None;
+        if let Some(policy) = policy {
+            if matches!(finish, Finish::Cancel(_)) {
+                let report = self.registry.job_path(id).join("result.json");
+                let until = Instant::now().checked_add(policy.grace()).ok_or_else(|| {
+                    RuntimeError::Invalid("cooperative interrupt deadline overflow".into())
+                })?;
+                // A completed result wins the cancellation race. The worker
+                // remains retained, so even that race never signals a reused PID.
+                let existing = read_result(&active.directory, &report, id);
+                let result = match existing {
+                    Ok(result) => Ok(result),
+                    Err(_) => match active.control.write_all(b"I") {
+                        Err(error) => Err(format!("cooperative interrupt request failed: {error}")),
+                        Ok(()) => loop {
+                            match read_result(&active.directory, &report, id) {
+                                Ok(result) => break Ok(result),
+                                Err(error) if Instant::now() >= until => {
+                                    break Err(format!(
+                                        "no durable cooperative interrupt acknowledgement before grace expired: {error}"
+                                    ));
+                                }
+                                Err(_) => thread::sleep(Duration::from_millis(5)),
+                            }
+                        },
+                    },
+                };
+                match result {
+                    Ok(result) => match &result.cooperative_stop {
+                        None => finish = Finish::Result(result),
+                        Some(crate::worker::CooperativeStop::InterruptedAndExited { reason }) => {
+                            finish = Finish::Cancel(reason.clone());
+                        }
+                        Some(other) => {
+                            cooperation_failure = Some(format!(
+                                "cooperative interrupt was not acknowledged with child exit: {other:?}"
+                            ));
+                        }
+                    },
+                    Err(error) => cooperation_failure = Some(error),
+                }
+            }
+            if let Finish::Result(result) = &finish {
+                match &result.cooperative_stop {
+                    Some(crate::worker::CooperativeStop::InterruptedAndExited { reason }) => {
+                        finish = Finish::Cancel(reason.clone())
+                    }
+                    Some(other) => {
+                        cooperation_failure = Some(format!(
+                            "cooperative interrupt did not establish child exit: {other:?}"
+                        ))
+                    }
+                    None => {}
+                }
+            }
+            // Missing/malformed command results cannot establish that an opted-in
+            // adapter cleaned up its detached children, even if the group dies.
+            if matches!(finish, Finish::Failure(_)) {
+                cooperation_failure =
+                    Some("cooperative worker ended without a valid durable command result".into());
+            }
+        }
         let mut stopped = crate::os::kill_owned_group(&mut active.child);
         let output = active.output.stop();
+        if let Some(message) = cooperation_failure {
+            stopped = Err(RuntimeError::UnsafeClose(message));
+        }
         if stopped.is_ok() {
             stopped = finish_stopped_source(active.lease);
         }
@@ -1112,7 +1194,13 @@ impl Drop for Runtime {
         for (id, mut active) in std::mem::take(&mut self.active) {
             let stopped = crate::os::kill_owned_group(&mut active.child);
             active.output.stop();
-            if stopped.is_ok() {
+            if stopped.is_ok()
+                && self
+                    .state
+                    .jobs
+                    .get(&id)
+                    .is_some_and(|job| job.request.cooperative_interrupt.is_none())
+            {
                 let _ = finish_stopped_source(active.lease);
             }
             let _ = crate::registry::expire_ticket(&active.directory, &self.registry.job_path(&id));

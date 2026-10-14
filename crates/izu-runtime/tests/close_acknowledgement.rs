@@ -19,7 +19,8 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temporary_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/tmp");
+        let temporary_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/local/tmp");
         fs::create_dir_all(&temporary_root).unwrap();
         let temporary = tempfile::tempdir_in(temporary_root).unwrap();
         let base = temporary.path().canonicalize().unwrap();

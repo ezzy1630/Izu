@@ -43,6 +43,7 @@ pub struct Transaction<'a> {
     store: &'a Store,
     current: Option<OperationId>,
     _lock: HeadLease,
+    _retention: crate::RetentionLease,
 }
 
 impl Store {
@@ -52,6 +53,7 @@ impl Store {
         cancel: &CancellationToken,
     ) -> Result<Transaction<'_>> {
         let lock = self.acquire_head(HeadMode::Exclusive, cancel)?;
+        let retention = self.retain(cancel)?;
         let current = read_head_file(self, cancel)?;
         let matches = match expected {
             HeadExpectation::Any => true,
@@ -68,6 +70,7 @@ impl Store {
             store: self,
             current,
             _lock: lock,
+            _retention: retention,
         })
     }
 

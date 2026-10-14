@@ -10,6 +10,10 @@ use std::time::Duration;
 /// owned bare cache and the executable is resolved before accepting its source.
 #[derive(Clone, Debug)]
 pub struct GitToolConfig {
+    /// Explicitly choose whether external LFS content remains represented by
+    /// committed pointer bytes. This adapter never hydrates external objects.
+    pub lfs_policy: LfsPolicy,
+    pub ssh: Option<crate::SshTransport>,
     pub executable: PathBuf,
     pub limits: GitLimits,
     pub worker: Option<WorkerLauncher>,
@@ -21,6 +25,8 @@ pub struct GitToolConfig {
 impl Default for GitToolConfig {
     fn default() -> Self {
         Self {
+            lfs_policy: LfsPolicy::Reject,
+            ssh: None,
             executable: PathBuf::from("git"),
             limits: GitLimits::default(),
             worker: None,
@@ -28,6 +34,15 @@ impl Default for GitToolConfig {
             https_root_certificates: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LfsPolicy {
+    #[default]
+    Reject,
+    /// Keep exact committed pointer blobs. External LFS content is unavailable
+    /// in native checkouts and is not uploaded by Git export or push.
+    PreservePointers,
 }
 
 /// Explicit ephemeral credentials for one repository URL. No user helper,
@@ -105,6 +120,9 @@ pub(crate) struct CommandOutput {
 impl GitTool {
     pub fn new(mut config: GitToolConfig) -> Result<Self> {
         config.limits.validate()?;
+        if let Some(ssh) = &mut config.ssh {
+            ssh.validate()?;
+        }
         let executable =
             if config.executable.is_absolute() || config.executable.components().count() > 1 {
                 std::fs::canonicalize(&config.executable)
