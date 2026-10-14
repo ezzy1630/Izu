@@ -103,6 +103,14 @@ earlier blocking call. A subsequent failure retained an empty watchdog stream;
 startup delay and a later stall remain distinguishable hypotheses, not proven
 causes. This collector incident remains open pending startup and stack evidence; it is separate from the original MCP discovery timeout.
 
+An Intel fault-suite admission regression also returned an unlabelled channel
+`Timeout`. Its fixture required a gate releaser to wake before a 200 ms request
+expired; deliberately delaying release reproduced that fixture failure. Separate
+checks now hold the gate through expiration and consume registration time inside
+the request before the native wait. The 200 ms request budget and existing native
+wait assertion remain unchanged. The original CI log does not identify which
+channel timed out, so that particular scheduling cause remains unconfirmed.
+
 Final Intel jobs did not execute because GitHub rejected the private campaign's
 jobs for account billing/spending limits. Earlier native CI passes belong to
 earlier sources and packages. No alternative final Intel environment was

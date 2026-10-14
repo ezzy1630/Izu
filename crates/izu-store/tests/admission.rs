@@ -294,14 +294,16 @@ fn cancellation_or_hook_error_after_registration_leaves_no_claim() -> TestResult
 }
 
 #[test]
-fn one_deadline_covers_the_insertion_gate_and_native_head_wait() -> TestResult {
+fn insertion_gate_deadline_expires_before_registration_and_preserves_holders() -> TestResult {
     let (directory, store) = fixture()?;
     let (registered, registration) = mpsc::channel();
-    let options = StoreOptions {
-        lock_timeout: Duration::from_millis(200),
-        ..signal_registration(registered)
-    };
-    let waiting = Store::open(&directory.path().canonicalize()?.join("store"), &options)?;
+    let waiting = Store::open(
+        &directory.path().canonicalize()?.join("store"),
+        &StoreOptions {
+            lock_timeout: Duration::from_millis(200),
+            ..signal_registration(registered)
+        },
+    )?;
     let native = store
         .root_directory()
         .open_existing_lock(OsStr::new("head.lock"))?;
@@ -311,6 +313,53 @@ fn one_deadline_covers_the_insertion_gate_and_native_head_wait() -> TestResult {
         .open_dir(OsStr::new("head-admission-v1"))?;
     let gate = queue.open_existing_lock(OsStr::new("gate.lock"))?;
     gate.try_lock()?;
+    let beginning = Instant::now();
+    let result = waiting.begin(HeadExpectation::Any, &CancellationToken::new());
+    assert!(
+        matches!(result, Err(StoreError::LockTimeout("head.lock"))),
+        "{result:?}"
+    );
+    assert!(beginning.elapsed() >= Duration::from_millis(200));
+    assert!(matches!(
+        registration.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    for (directory, name) in [(store.root_directory(), "head.lock"), (&queue, "gate.lock")] {
+        let observer = directory.open_existing_lock(OsStr::new(name))?;
+        assert!(matches!(
+            observer.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+    }
+    drop(gate);
+    drop(native);
+    drop(store.begin(HeadExpectation::Any, &CancellationToken::new())?);
+    Ok(())
+}
+
+#[test]
+fn one_deadline_covers_registration_and_native_head_wait() -> TestResult {
+    let (directory, store) = fixture()?;
+    let (registered, registration) = mpsc::channel();
+    let options = StoreOptions {
+        lock_timeout: Duration::from_millis(200),
+        fault_hook: Some(FaultHook(Arc::new(move |boundary| {
+            if boundary == DurableBoundary::HeadAdmissionRegistered {
+                // Consume the pre-native budget inside the request, after real
+                // registration. A descheduled releaser cannot accidentally let
+                // the request expire at the gate before this observation.
+                std::thread::sleep(Duration::from_millis(120));
+                registered.send(Instant::now()).map_err(io::Error::other)?;
+            }
+            Ok(())
+        }))),
+        ..StoreOptions::default()
+    };
+    let waiting = Store::open(&directory.path().canonicalize()?.join("store"), &options)?;
+    let native = store
+        .root_directory()
+        .open_existing_lock(OsStr::new("head.lock"))?;
+    native.try_lock()?;
     std::thread::scope(|scope| -> TestResult {
         let (started, start_wait) = mpsc::channel();
         let request = scope.spawn(move || {
@@ -320,10 +369,12 @@ fn one_deadline_covers_the_insertion_gate_and_native_head_wait() -> TestResult {
                 .map(drop);
             (result, Instant::now())
         });
-        let beginning = start_wait.recv_timeout(Duration::from_secs(1))?;
-        std::thread::sleep(Duration::from_millis(120));
-        drop(gate);
-        let registered = registration.recv_timeout(Duration::from_secs(1))?;
+        let beginning = start_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("deadline request started");
+        let registered = registration
+            .recv_timeout(Duration::from_secs(1))
+            .expect("request completed registration and consumed its pre-native budget");
         let (result, ended) = request.join().expect("bounded request");
         assert!(
             matches!(result, Err(StoreError::LockTimeout("head.lock"))),
