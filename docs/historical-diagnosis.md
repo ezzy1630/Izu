@@ -40,6 +40,21 @@ without host bind mounts; continue qualifying and running Linux repositories on
 native storage. This comparison does not certify arbitrary shared filesystems
 or establish physical power-loss durability.
 
+A subsequent public macOS Intel CI run reproduced `LockTimeout("head.lock")`
+in `lock_wait_is_bounded_and_recovers_on_drop` on native storage. The failure
+was outside the assertion for the deliberately blocked contender: setup or
+post-drop acquisition also used the 30 ms budget. This shows that shared storage
+is one way to expose the fixture assumption, not a prerequisite for it. The
+historical receipts still cannot identify their exact slow operation.
+
+The lock tests now use a normal-budget holder for setup and successful acquisition,
+while the contender retains its 30 ms budget and one-second return assertion.
+A deterministic fault-injection test consumes the admission budget with no other
+holder, requires the timeout, and verifies that its claim is released. Production
+deadlines and persistence checks are unchanged. The corresponding Intel artifact
+upload failed independently after five GitHub artifact-service request timeouts;
+that was neither a billing refusal nor missing diagnostic files.
+
 ## MCP first discovery
 
 The failed serial test timed out waiting 15 seconds for the initial discovery

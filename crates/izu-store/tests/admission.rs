@@ -618,3 +618,33 @@ fn queued_process_death_releases_its_claim_and_preserves_the_head_holder() -> Te
     drop(store.begin(HeadExpectation::Any, &CancellationToken::new())?);
     Ok(())
 }
+
+#[test]
+fn uncontended_admission_still_obeys_the_whole_budget_and_releases_its_claim() -> TestResult {
+    let (directory, store) = fixture()?;
+    let delayed = Store::open(
+        &directory.path().canonicalize()?.join("store"),
+        &StoreOptions {
+            lock_timeout: Duration::from_millis(30),
+            fault_hook: Some(FaultHook(Arc::new(|boundary| {
+                if boundary == DurableBoundary::HeadAdmissionRegistered {
+                    // No other holder exists. Work inside admission alone can
+                    // exhaust the caller's budget before native acquisition.
+                    std::thread::sleep(Duration::from_millis(60));
+                }
+                Ok(())
+            }))),
+            ..StoreOptions::default()
+        },
+    )?;
+    let cancel = CancellationToken::new();
+    let started = Instant::now();
+    let result = delayed.begin(HeadExpectation::Any, &cancel);
+    assert!(matches!(result, Err(StoreError::LockTimeout("head.lock"))));
+    assert!(started.elapsed() >= Duration::from_millis(30));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    drop(result);
+    // The expired contender must not strand its admission claim or native lock.
+    drop(store.begin(HeadExpectation::Any, &cancel)?);
+    Ok(())
+}
