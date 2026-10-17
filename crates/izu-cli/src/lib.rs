@@ -82,6 +82,28 @@ pub enum Command {
     },
     /// Show an exact native revision record.
     Show { revision: String },
+    /// Read a bounded page of captured file bytes without a checkout.
+    File {
+        revision: String,
+        path: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        #[arg(long, default_value_t = 65536)]
+        limit: usize,
+    },
+    /// List changed paths between captured revisions, with filtering and pagination.
+    Changes {
+        before: String,
+        after: String,
+        #[command(flatten)]
+        selection: SelectionArgs,
+        #[arg(long)]
+        after_path: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// Find a merge base without touching working files.
+    MergeBase { ours: String, theirs: String },
     /// Save a durable local snapshot, without creating an intentional commit.
     Checkpoint {
         #[command(flatten)]
@@ -553,6 +575,22 @@ pub enum ResolutionSide {
 #[derive(Debug, Subcommand)]
 pub enum WorkspaceCommand {
     List,
+    /// Create a workspace containing only selected paths; requires metadata v3.
+    SparseStart {
+        name: String,
+        directory: PathBuf,
+        #[arg(long)]
+        from: String,
+        #[arg(long = "path", required = true)]
+        paths: Vec<String>,
+    },
+    /// Materialize additional paths, preserving current edits; --all restores full scope.
+    Expand {
+        #[arg(long, conflicts_with = "paths", required_unless_present = "paths")]
+        all: bool,
+        #[arg(long = "path", required_unless_present = "all")]
+        paths: Vec<String>,
+    },
     /// Show an exact workspace's path and expected revision token.
     Open {
         id: String,
@@ -633,6 +671,16 @@ fn read_git_tags(path: Option<PathBuf>) -> Result<Vec<GitImportTag>, ApiError> {
 
 #[derive(Debug, Subcommand)]
 pub enum GitCommand {
+    /// Inspect compatibility and omissions before creating a native repository.
+    Preflight {
+        source: PathBuf,
+        #[arg(long)]
+        tags_json: Option<PathBuf>,
+        #[command(flatten)]
+        reference: GitImportArgs,
+        #[command(flatten)]
+        transport: GitTransportArgs,
+    },
     /// Adopt and materialize the selected Git default branch into a new directory.
     Clone {
         source: PathBuf,
@@ -991,6 +1039,51 @@ impl Cli {
                 context: read,
                 limit,
             }),
+            Command::File {
+                revision,
+                path,
+                offset,
+                limit,
+            } => Ok(Operation::FileRead {
+                context: read,
+                revision,
+                path,
+                offset,
+                limit,
+            }),
+            Command::Changes {
+                before,
+                after,
+                selection,
+                after_path,
+                limit,
+            } => Ok(Operation::Changes {
+                context: read,
+                before,
+                after,
+                selection: selection.into_selection(),
+                after_path,
+                limit,
+            }),
+            Command::MergeBase { ours, theirs } => Ok(Operation::MergeBase {
+                context: read,
+                ours,
+                theirs,
+            }),
+            Command::Git {
+                command:
+                    GitCommand::Preflight {
+                        source,
+                        tags_json,
+                        reference,
+                        transport,
+                    },
+            } => Ok(Operation::GitPreflight {
+                source: git_location(source)?,
+                refs: reference.into_refs()?,
+                tags: read_git_tags(tags_json)?,
+                transport: transport.read()?,
+            }),
             Command::Show { revision } => Ok(Operation::Show {
                 revision: api.resolve_selector(&read, &revision, cancel)?,
                 context: read,
@@ -1053,6 +1146,31 @@ impl Cli {
                 selection: selection.into_selection(),
                 message,
                 author: author.into(),
+            }),
+            Command::Workspace {
+                command:
+                    WorkspaceCommand::SparseStart {
+                        name,
+                        directory,
+                        from,
+                        paths,
+                    },
+            } => Ok(Operation::WorkspaceSparseStart {
+                context: read,
+                name,
+                path: directory,
+                from,
+                paths,
+            }),
+            Command::Workspace {
+                command: WorkspaceCommand::Expand { all, paths },
+            } => Ok(Operation::WorkspaceExpand {
+                context: mutation(&read)?,
+                selection: if all {
+                    PathSelection::All {}
+                } else {
+                    PathSelection::Paths { paths }
+                },
             }),
             Command::Workspace {
                 command: WorkspaceCommand::List,

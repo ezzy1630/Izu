@@ -36,7 +36,11 @@ def probe_worker():
             selector.register(child.stdout, selectors.EVENT_READ, 1)
             selector.register(child.stderr, selectors.EVENT_READ, 2)
             while True:
-                ready = selector.select(0.01)
+                # Observe exit before the readiness snapshot. A child can write
+                # and exit after an empty select; polling afterward would lose
+                # that final output. Once exited, drain only already-ready data.
+                code = child.poll()
+                ready = selector.select(0 if code is not None else 0.01)
                 for key, _ in ready:
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
@@ -53,7 +57,6 @@ def probe_worker():
                         chunk = chunk[written:]
                     if counts[descriptor] > MAX_PROBE_BYTES:
                         raise ValueError('output_limit')
-                code = child.poll()
                 # The worker retains group leadership even if the tool exits
                 # with a descendant holding its pipes. Drain ready bytes only.
                 if code is not None and not ready:
@@ -224,6 +227,8 @@ def prepare(args):
     rustc, cargo = rust_toolchain_tools(output)
     compiler = probe([rustc['resolved_path'], '-vV'], output)
     cargo_version = probe([cargo['resolved_path'], '-V'], output)
+    # Keep the raw successful probes if later identity parsing fails.
+    write_json(output / 'compiler-probes.json', {'rustc': compiler, 'cargo': cargo_version})
     host = rust_host(compiler['stdout'])
     system = platform.system()
     sdk = None

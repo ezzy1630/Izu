@@ -132,6 +132,7 @@ fn mode(_metadata: &Metadata) -> Result<FileMode> {
 }
 
 struct Walker<'a, 'store> {
+    baseline: &'a Tree,
     batch: &'a mut ObjectBatch<'store>,
     root: &'a Path,
     selection: &'a Selection,
@@ -385,9 +386,14 @@ impl Walker<'_, '_> {
                     self.limits,
                     self.cancel,
                     |file, length| {
-                        self.batch
-                            .stage_blob(file, length, self.cancel)
-                            .map(StagedObjectId::object_id)
+                        match self.baseline.entries.get(&path) {
+                            Some(TreeEntry::File { blob, .. }) => {
+                                self.batch
+                                    .stage_blob_reusing(file, length, *blob, self.cancel)
+                            }
+                            _ => self.batch.stage_blob(file, length, self.cancel),
+                        }
+                        .map(StagedObjectId::object_id)
                     },
                 )?;
                 self.stats.bytes = total;
@@ -506,6 +512,7 @@ pub(crate) fn capture_at(
     tree.entries.retain(|path, _| !selection.includes(path));
     let mut batch = store.begin_object_batch(cancel)?;
     let mut walker = Walker {
+        baseline,
         batch: &mut batch,
         root,
         selection,

@@ -11,7 +11,8 @@ import time
 import unittest
 
 ADAPTER = Path(__file__).resolve().parents[1] / "agent-host.py"
-MAIN = runpy.run_path(str(ADAPTER))["project_local_root"]()
+MODULE = runpy.run_path(str(ADAPTER))
+MAIN = Path(tempfile.gettempdir()).resolve()
 
 class HostInterrupt(unittest.TestCase):
     def test_forwards_interrupt_and_retains_cleanup_evidence(self):
@@ -21,7 +22,7 @@ class HostInterrupt(unittest.TestCase):
                 repo = root / "repo"
                 repo.mkdir()
                 evidence = root / "evidence"
-                evidence.mkdir()
+                evidence.mkdir(mode=0o700)
                 (evidence / "prompt.txt").write_text("fixture")
                 fake = root / "codex-fixture"
                 fake.write_text("#!" + sys.executable + "\n" + r'''import json,signal,subprocess,sys,time
@@ -99,7 +100,7 @@ while True:time.sleep(.02)
                     fake.chmod(0o700)
                     evidence = root / "evidence"
                     if mode == "child":
-                        evidence.mkdir()
+                        evidence.mkdir(mode=0o700)
                         (evidence / "prompt.txt").write_text("fixture")
                     driver = root / "driver.py"
                     driver.write_text(r'''import os,runpy,signal,subprocess,sys,time
@@ -179,4 +180,78 @@ runpy.run_path(adapter,run_name="__main__")
                         for pid in (cleanup["controller"],cleanup["child"]):
                             with self.assertRaises(ProcessLookupError):os.kill(pid,0)
 
-if __name__ == "__main__":unittest.main()
+
+
+class LiveControl(unittest.TestCase):
+    def test_cancel_uses_live_capability_and_never_a_saved_pid(self):
+        import threading
+        with tempfile.TemporaryDirectory(dir=MAIN, prefix="host-control-") as directory:
+            evidence = Path(directory)
+            event = threading.Event()
+            with MODULE["controller_endpoint"](evidence, event):
+                reply = MODULE["inspect_run"](evidence, cancel=True)
+                self.assertTrue(reply["cancellation_requested"])
+                self.assertTrue(event.is_set())
+            with self.assertRaises(OSError):
+                MODULE["inspect_run"](evidence, cancel=True)
+
+    def test_wrong_token_does_not_cancel(self):
+        import socket
+        import threading
+        with tempfile.TemporaryDirectory(dir=MAIN, prefix="host-control-") as directory:
+            evidence = Path(directory)
+            event = threading.Event()
+            with MODULE["controller_endpoint"](evidence, event):
+                endpoint = json.loads((evidence / "control.json").read_text())
+                with socket.create_connection(("127.0.0.1", endpoint["port"]), timeout=2) as channel:
+                    channel.sendall(b'{"action":"cancel","token":"wrong"}\n')
+                    self.assertEqual(json.loads(channel.recv(1024)), {"accepted":False})
+                self.assertFalse(event.is_set())
+
+class PortableHost(unittest.TestCase):
+    def test_private_state_and_repository_boundary(self):
+        with tempfile.TemporaryDirectory(dir=MAIN, prefix="portable-host-") as directory:
+            root = Path(directory)
+            shared = root / "shared"
+            shared.mkdir(mode=0o755)
+            with self.assertRaisesRegex(ValueError, "private"):
+                MODULE["private_directory"](shared)
+            link = root / "link"
+            link.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "real directory"):
+                MODULE["private_directory"](link)
+            private = MODULE["private_directory"](root / "state", create=True)
+            self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+
+    def test_relocated_script_uses_explicit_paths_without_development_checkout(self):
+        import shutil
+        with tempfile.TemporaryDirectory(dir=MAIN, prefix="portable-launch-") as directory:
+            root = Path(directory)
+            repo = root / "repo"; repo.mkdir()
+            adapter = root / "relocated.py"; shutil.copyfile(ADAPTER, adapter)
+            instructions = root / "instructions.md"; instructions.write_text("fixture guidance")
+            auth = root / "auth.json"; auth.write_text("fixture auth")
+            fake = root / "fixture"
+            fake.write_text("#!" + sys.executable + "\n" + r'''import json,os,sys
+from pathlib import Path
+if "--version" in sys.argv: print("fixture 1"); sys.exit(0)
+home=Path(os.environ["CODEX_HOME"])
+assert home.joinpath("AGENTS.md").read_text()=="fixture guidance"
+assert home.joinpath("auth.json").read_text()=="fixture auth"
+assert home.stat().st_mode & 0o777 == 0o700
+print(json.dumps({"fixture":True}))
+''')
+            fake.chmod(0o700)
+            evidence = root / "evidence"
+            process = subprocess.run([sys.executable, str(adapter), "start", "--repo", str(repo),
+                "--izu", str(fake), "--codex", str(fake), "--change", "test", "--prompt", "test",
+                "--evidence", str(evidence), "--auth-file", str(auth),
+                "--instructions-file", str(instructions)], capture_output=True, text=True)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(json.loads((evidence / "launch-result.json").read_text())["returncode"], 0)
+            self.assertEqual(list((root / ".repo.izu-host").glob("codex-session-*")), [])
+            self.assertEqual(auth.read_text(), "fixture auth")
+            self.assertEqual(instructions.read_text(), "fixture guidance")
+
+if __name__ == "__main__":
+    unittest.main()

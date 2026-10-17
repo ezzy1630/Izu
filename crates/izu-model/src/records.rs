@@ -360,10 +360,23 @@ record!(WorkspaceRecord, RawWorkspaceRecord, "RawWorkspaceRecord", {
     root: String,
     head: RevisionId,
     sources: BTreeMap<String, SourceRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sparse_paths: Option<Vec<RepoPath>>,
 });
 
 impl Validate for WorkspaceRecord {
     fn validate(&self, limits: &Limits) -> Result<(), ModelError> {
+        if let Some(paths) = &self.sparse_paths {
+            check_len("sparse paths", paths.len(), limits.max_tree_entries)?;
+            if paths.is_empty() || paths.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(ModelError::InvalidMetadata {
+                    reason: "sparse paths must be nonempty, sorted and unique",
+                });
+            }
+            for path in paths {
+                path.validate(limits)?;
+            }
+        }
         validate_reference_name(&self.name)?;
         check_len(
             "workspace root bytes",
@@ -394,6 +407,7 @@ impl Validate for WorkspaceRecord {
 #[serde(rename_all = "snake_case")]
 pub enum MetadataVersion {
     V2,
+    V3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,7 +484,7 @@ record!(#[derive(Default)] RepositoryView, RawRepositoryView, "RawRepositoryView
 
 impl Validate for RepositoryView {
     fn validate(&self, limits: &Limits) -> Result<(), ModelError> {
-        if !self.tags.is_empty() && self.metadata_version != Some(MetadataVersion::V2) {
+        if !self.tags.is_empty() && self.metadata_version.is_none() {
             return Err(ModelError::InvalidMetadata {
                 reason: "tags require metadata version two",
             });
@@ -492,6 +506,13 @@ impl Validate for RepositoryView {
             change.validate(limits)?;
         }
         for workspace in self.workspaces.values() {
+            if workspace.sparse_paths.is_some()
+                && self.metadata_version != Some(MetadataVersion::V3)
+            {
+                return Err(ModelError::InvalidMetadata {
+                    reason: "sparse workspaces require metadata version three",
+                });
+            }
             workspace.validate(limits)?;
         }
         let mut total = 0usize;

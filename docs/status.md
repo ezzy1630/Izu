@@ -1,6 +1,6 @@
 # Development status
 
-As of 2026-10-14, izu is an experimental 0.1.0 development build. It is not a
+As of 2026-10-17, izu is an experimental 0.1.0 development build. It is not a
 qualified production release. Do not rely on this build as the only copy of
 important work.
 
@@ -11,7 +11,7 @@ see [NOTICE](../NOTICE) for attribution.
 
 ## Recorded candidate validation
 
-The latest local candidate, R6, has these recorded results:
+The October 14 local candidate, R6, has these recorded results:
 
 | Environment | Default tests | Fault-suite tests | Extracted package workflows |
 | --- | ---: | ---: | ---: |
@@ -33,9 +33,9 @@ fixtures and exact source/binary manifests remain in the maintainer's private
 `.artifacts` directory and are excluded from Git. R6 used Rust 1.99.0 and this
 199-file source manifest:
 `3d8815df7b030639f5c3e8e981dd962045d28644b108029128a512de9b7e7edb`.
-The public development update changes documentation, CI and the disposable
-acceptance harness beyond that frozen source; its Rust source and lockfile are
-unchanged. Each result applies only to its recorded source, executable and
+The October 14 public development update changed documentation, CI and the
+disposable acceptance harness beyond that frozen source, without changing its
+Rust source or lockfile. The October 17 work below changes Rust source as well. Each result applies only to its recorded source, executable and
 environment. It does not qualify a later packaged artifact.
 
 The exact macOS packaged executable passed a real Codex CLI campaign with five
@@ -82,16 +82,19 @@ valid old signature. Other restrictions remain explicit in
 Native metadata-v2 migration requires explicit exact-HEAD approval and retained
 backup; tags and selected-object reclamation use the shared engine.
 
-Required reliability evidence remains missing for the historical MCP
-first-discovery 15-second timeout and Linux 30 ms HEAD admission failures.
-Later successful runs did not explain them. The recovered MCP source passed its
-original serial cases, but the failed executable and stalled-child evidence
-were not retained. These incidents are distinct from the fixed MCP
-output-shutdown and macOS initialization-cost defects. Earlier Linux ARM
-30-second controller setup and 120-second close failures also remain
-unexplained; visible checkpoints are not durable close acknowledgements.
-Diagnostic capture must retain live process, pipe and lock ownership on a
-future reproduction rather than declaring the incident resolved by a rerun.
+The historical MCP first-discovery 15-second timeout remains unexplained.
+Recovered source and a preserved original-context executable pass, but the
+failed run lacks exact executable identity and stalled-child evidence. The
+Linux 30 ms HEAD failure pattern was reproduced on Docker Desktop shared
+storage with the original executable: traces of a diagnostic rebuild show the
+budget expiring without lock-wait retries, including after successful acquisition.
+Native ext4 controls passed; no deadline or identity check was weakened. See
+[historical diagnosis](historical-diagnosis.md) for attribution limits.
+These incidents are distinct from fixed MCP output-shutdown and macOS
+initialization-cost defects. Earlier Linux ARM 30-second controller setup and
+120-second close failures remain unexplained; visible checkpoints are not
+durable close acknowledgements. Future failures must retain live process,
+pipe and lock ownership before cleanup.
 
 Public macOS Intel CI also exposed a failure in the diagnostic collector itself:
 native stack commands remained unfinished when its seven-second owner bound
@@ -118,11 +121,12 @@ commands and checks the specific error for each case. The one-second override fo
 test's four-second return assertion are unchanged. The original probe error was not
 retained, so its exact failure cause remains unknown.
 
-Final Intel jobs did not execute because GitHub rejected the private campaign's
-jobs for account billing/spending limits. Earlier native CI passes belong to
-earlier sources and packages. No alternative final Intel environment was
-available. Final SSH/protection and interrupted-publication acceptance remains
-incomplete. There is no public binary release or Developer ID/notarization;
+The private campaign's final Intel jobs did not execute because GitHub rejected
+that repository's jobs for account billing/spending limits. This restriction
+does not block normal CI in the public `ezzy1630/Izu` repository. Fresh public
+CI must qualify the current source and packages; earlier passes apply only to
+their recorded source. Final SSH/protection and interrupted-publication acceptance
+remains incomplete. There is no public binary release or Developer ID/notarization;
 macOS candidates have only a linker ad hoc signature and failed Gatekeeper
 assessment. No daily-driver installation or system policy change was performed.
 
@@ -152,3 +156,91 @@ file-payload test, not dependency-installer or relocated-build execution proof.
 OS caches were not purged; sampled RSS can miss peaks; APFS allocated bytes do
 not establish exclusive device use. See [scale validation](scale-validation.md),
 [benchmark methodology](benchmark-method.md) and [validation](validation.md).
+
+## Scion follow-up implementation (2026-10-17)
+
+Unchanged capture now reuses a prior blob after complete stored-object validation
+and byte-for-byte source comparison. It avoids creating duplicate temporary blobs;
+it still scans source and performs the existing persistence barriers. Corruption,
+replacement and uncertain publication remain errors rather than successful receipts.
+
+The CLI, JSON and MCP interfaces expose checkout-free file pages, filtered change
+pages and merge-base. Git preflight uses the same inventory and import policy as
+clone without adopting history. Sparse workspaces require an explicit metadata-v3
+migration; omitted paths remain in logical history. Updates preserve out-of-scope
+physical files, expansion preserves unfinished edits, and native bundles retain
+scope and omitted history. Earlier readers refuse the new version.
+
+The host adapter supports short launch/continue commands, run inspection and
+authenticated live-controller cancellation. Continuation starts a new model
+conversation in the preserved native workspace. Checks and landing still use the
+shared engine and exact candidate evidence.
+
+An isolated macOS ARM64 release-binary comparison used 512/5,000/20,000 files,
+4,096 bytes per file and three samples per unchanged operation. At 20,000 files,
+median checkpoint improved from 8.339 s to 5.790 s (30.6%), working diff from
+7.618 s to 5.059 s (33.6%), and status from 7.651 s to 5.106 s (33.3%). Builds
+were paused during measurement; OS caches and unrelated host activity were not
+controlled. These are workload observations, not a general performance claim.
+
+The real-agent pilot copied the actual merge crate into independent owned
+fixtures. Two tasks per backend added regression tests, passed candidate checks
+and landed with expected-old leases. Both accepted two tasks without intervention;
+Git shared worktrees took 50.18 s and Izu took 57.98 s. Different model outputs,
+latency and caches prevent a broad productivity conclusion. The checked-in
+benchmark and repository-profile driver make the experiments repeatable.
+
+The separate 2,000-file, 50-revision profile measured median working status at
+434.96 ms, tree decode at 7.59 ms, stored revision diff at 15.62 ms and merge-base
+at 4.57 ms. HEAD admission was about 0.30 ms with one caller and 70.72 ms with
+sixteen contending callers. Admission excludes publication; these measurements
+do not establish concurrent commit throughput. This evidence supports reducing
+source-capture work first. No new history index or transaction-ownership model
+is introduced by this change.
+
+These changes do not establish a production release. Qualification must bind the
+final source and package to each supported native environment, actual host use
+and authorized remote acceptance. Historical CI and package results above cannot
+qualify this source. Signing, installation and publication remain separate actions.
+
+## Daily-use hardening (2026-10-17)
+
+The portable host launcher now loads the selected project's instructions and an
+optional personal instruction file in a private temporary Codex home. Native
+checkpoints provide default source evidence; an ignored cache with more than
+10,000 files no longer fails the extra Python snapshot. Actual Codex start and
+continuation runs on the merge crate verified project/personal instruction
+loading, exclusion of unrelated parent instructions, preserved edits and exact
+native source readback.
+
+A real Cargo candidate exposed hard-linked incremental files during recovery
+capture. The new `izu-cargo-check` helper places private build outputs outside
+captured source. The same candidate then passed all 17 tests and landed; the
+hard-link refusal and failed check workspace were preserved.
+
+`izu-backup` checkpoints every registered workspace, creates a native bundle and
+performs a restore drill before reporting success. It verifies source trees,
+heads, sparse scopes, branch references and tags. Each archived workspace is
+restored into a separate repository because native restore deliberately activates
+one selected workspace. Tests cover unfinished human and agent edits, restoration
+without the original repository, corruption, overwrite refusal and active jobs.
+This is local recovery proof, not an off-device backup or power-loss claim.
+
+Repeated unchanged-deadline probes passed 60 cases on macOS ARM64 (including MCP)
+and 60 on Linux ARM64 native ext4. Those soaks did not diagnose the earlier
+incidents. A subsequent controlled filesystem comparison reproduced the Linux
+failure pattern; MCP remains unresolved. The repeatable soak driver records
+exact executable and source identities.
+
+Authenticated disposable GitHub exchange passed its recorded transport cases.
+Billing and branch-protection restrictions affected only the disposable private
+acceptance repository. The public `ezzy1630/Izu` repository already has Actions
+enabled; standard GitHub-hosted runners and protected branches are available on
+GitHub Free for public repositories. Its last inspected main run passed five
+of six jobs; macOS ARM64 packaging failed while parsing compiler identity. A
+locally reproduced output-capture race is fixed, with raw compiler probes retained
+before parsing and hidden evidence directories explicitly included in artifact
+uploads. A fresh public CI run must validate these changes after publication.
+Public main was unprotected when inspected; no repository settings were changed.
+Use this as a development pilot with independent backups; no general superiority
+to Git, production support, installation or public release is established.

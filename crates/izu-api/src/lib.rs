@@ -344,6 +344,82 @@ impl Api {
                         .map_err(engine_error)?,
                 )
             }
+            Operation::FileRead {
+                context,
+                revision,
+                path,
+                offset,
+                limit,
+            } => {
+                let repo = repository(&context)?;
+                value(
+                    repo.file_page(
+                        parse(&revision, "revision")?,
+                        izu_engine::RepoPath::new(path).map_err(model_error)?,
+                        offset,
+                        limit,
+                        cancel,
+                    )
+                    .map_err(engine_error)?,
+                )
+            }
+            Operation::Changes {
+                context,
+                before,
+                after,
+                selection,
+                after_path,
+                limit,
+            } => {
+                let repo = repository(&context)?;
+                value(
+                    repo.changes_page(
+                        parse(&before, "before")?,
+                        parse(&after, "after")?,
+                        parse_selection(selection)?,
+                        after_path
+                            .map(izu_engine::RepoPath::new)
+                            .transpose()
+                            .map_err(model_error)?,
+                        limit,
+                        cancel,
+                    )
+                    .map_err(engine_error)?,
+                )
+            }
+            Operation::MergeBase {
+                context,
+                ours,
+                theirs,
+            } => {
+                let repo = repository(&context)?;
+                value(
+                    json!({"merge_base": repo.merge_base(parse(&ours, "ours")?, parse(&theirs, "theirs")?, cancel).map_err(engine_error)?}),
+                )
+            }
+            Operation::GitPreflight {
+                source,
+                refs,
+                tags,
+                transport,
+            } => {
+                let source = git_location(source)?;
+                let adapter = self.git_adapter_for(&source, transport)?;
+                match adapter.inventory_with_options(
+                    &source,
+                    &git_import_options(refs, tags)?,
+                    cancel,
+                ) {
+                    Ok(inventory) => value(json!({"supported": inventory.unsupported.is_empty(),
+                        "blockers": inventory.unsupported, "inventory": inventory,
+                        "next_action": "Inspect blockers, warnings and omitted refs before cloning. This preflight does not adopt history or verify signatures."})),
+                    Err(izu_git::Error::Unsupported(blockers)) => {
+                        value(json!({"supported":false,"blockers":blockers,
+                        "next_action":"Keep the original repository. Select a supported scope or resolve the reported incompatibilities before cloning."}))
+                    }
+                    Err(error) => Err(git_error(error)),
+                }
+            }
             Operation::Checkpoint { context, selection } => {
                 let (repo, workspace, expected) = mutation(&context)?;
                 value(
@@ -425,6 +501,31 @@ impl Api {
                         .map_err(engine_error)?,
                 )
             }
+            Operation::WorkspaceSparseStart {
+                context,
+                name,
+                path,
+                from,
+                paths,
+            } => {
+                let repo = repository(&context)?;
+                let paths = paths
+                    .into_iter()
+                    .map(izu_engine::RepoPath::new)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(model_error)?;
+                value(
+                    repo.fork_sparse_workspace(name, path, parse(&from, "from")?, paths, cancel)
+                        .map_err(engine_error)?,
+                )
+            }
+            Operation::WorkspaceExpand { context, selection } => {
+                let (repo, workspace, expected) = mutation(&context)?;
+                value(
+                    repo.expand_workspace(workspace, expected, parse_selection(selection)?, cancel)
+                        .map_err(engine_error)?,
+                )
+            }
             Operation::WorkspaceList { context } => {
                 let repo = repository(&context)?;
                 let _retention = repo.retention_lease(cancel).map_err(engine_error)?;
@@ -503,7 +604,7 @@ impl Api {
                     .view
                     .metadata_version;
                 value(
-                    json!({"operation":head,"metadata_version":if version.is_some(){2}else{1},"object_frame_version":1,"readable_metadata_versions":[1,2]}),
+                    json!({"operation":head,"metadata_version":match version { None => 1, Some(izu_engine::MetadataVersion::V2) => 2, Some(izu_engine::MetadataVersion::V3) => 3 },"object_frame_version":1,"readable_metadata_versions":[1,2,3]}),
                 )
             }
             Operation::MetadataMigrate {
@@ -511,16 +612,20 @@ impl Api {
                 expected_operation,
                 version,
             } => {
-                if version != 2 {
-                    return Err(ApiError::invalid(
-                        "Only explicit migration to metadata version two is supported",
-                    ));
-                }
+                let target = match version {
+                    2 => izu_engine::MetadataVersion::V2,
+                    3 => izu_engine::MetadataVersion::V3,
+                    _ => return Err(ApiError::invalid("Supported migration targets are 2 and 3")),
+                };
                 let repo = repository(&context)?;
                 let operation = repo
-                    .migrate_metadata_v2(parse(&expected_operation, "expected operation")?, cancel)
+                    .migrate_metadata(
+                        parse(&expected_operation, "expected operation")?,
+                        target,
+                        cancel,
+                    )
                     .map_err(engine_error)?;
-                value(json!({"operation":operation,"metadata_version":2}))
+                value(json!({"operation":operation,"metadata_version":version}))
             }
             Operation::Restore {
                 context,

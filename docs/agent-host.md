@@ -8,7 +8,7 @@ The adapter reads its canonical cwd before launching Codex and passes that
 directory explicitly to `codex exec --cd`. It does not implement history writes.
 
 This uses the installed Codex CLI and existing account authentication. It does
-not install software, edit account credentials, load Codex user config/rules,
+not install software, edit account credentials, load Codex user configuration,
 or message an existing chat. Model and reasoning settings apply to this launch:
 `gpt-6.1-sol`, medium reasoning. The CLI's `--ephemeral` mode avoids saved Codex
 session files; JSON events still identify the newly executed session.
@@ -16,19 +16,27 @@ session files; JSON events still identify the newly executed session.
 The [official non-interactive documentation](https://learn.chatgpt.com/docs/non-interactive-mode)
 describes `codex exec` and its JSON event stream. Check the installed CLI's
 `exec --help` before changing its flags; this adapter uses its supported
-`--ignore-user-config`, `--ignore-rules`, `--ephemeral`, `--json`, `--cd`,
+`--ignore-user-config`, `--ephemeral`, `--json`, `--cd`,
 `--skip-git-repo-check` and `--sandbox workspace-write` options.
 
 ## Launch
 
-Create a prompt file and a private local state directory under this main checkout's
-canonical `.artifacts/local`. The adapter resolves a development worktree's main
-checkout through its Git directory metadata; a similarly named path elsewhere is
-rejected. The state directory must be outside the native repository's
-source root, so that credentials cannot enter a source checkpoint. The current
-adapter is suitable for explicitly selected native repositories or disposable
-fixtures stored beneath `.artifacts/local`; it refuses a state home inside the
-repository being launched.
+The packaged `izu-agent` command runs outside this development checkout. It uses
+its sibling `izu` executable, or PATH when invoked from source; explicit `--izu`
+and `--codex` take precedence. Python 3.11 or newer and an authenticated Codex CLI
+are required. Repository defaults to cwd; private state defaults to the sibling
+`.PROJECT-NAME.izu-host` directory. State and evidence must be owned by the
+current user, private (0700), and outside the selected repository source.
+
+The selected workspace's `AGENTS.md` or `AGENTS.override.md` is loaded. The adapter
+sets `project_root_markers=[]` so unrelated enclosing repository guidance does
+not become this project's instruction root. Nested instructions remain scoped
+by Codex. Use `--instructions-file` to supply personal instructions explicitly;
+they are copied into the temporary Codex home and their digest is recorded.
+`--ignore-rules` concerns execution-policy files, not AGENTS instructions; the
+adapter does not use that flag.
+
+An explicit source invocation is:
 
 ```sh
 python3 scripts/agent-host.py start \
@@ -36,16 +44,17 @@ python3 scripts/agent-host.py start \
   --repo /absolute/path/to/native-project \
   --change feature \
   --codex /absolute/path/to/installed/codex \
-  --state-root /absolute/izu-checkout/.artifacts/local/host-state \
+  --state-root /absolute/private/host-state \
   --auth-file /absolute/path/to/existing/auth.json \
   --prompt-file /absolute/path/to/task.txt \
-  --evidence /absolute/izu-checkout/.artifacts/local/host-run-unique
+  --evidence /absolute/private/host-run-unique
 ```
 
 Use `run` with the same change to continue existing work. `start` also resumes a
 known named change through IZU's normal ambiguity and writer-ownership guards.
-The evidence directory must be new. A launch without `--auth-file` can use
-credentials already present in its environment; it does not start login flows.
+The evidence directory must be new. Without `--auth-file`, the adapter reads `auth.json` from the current
+`CODEX_HOME` or `~/.codex` when present. Environment authentication can also apply.
+It does not start login flows.
 No authenticated execution is claimed until actual model events and resulting
 files have been checked.
 
@@ -60,11 +69,14 @@ include credentials in prompts, source files, or reports.
 ## Verify actual behavior
 
 `launch.json` binds the IZU binary SHA-256, adapter SHA-256, installed Codex version
-and explicit argv. `binding.json` records the canonical cwd and source hashes
+and explicit argv. `binding.json` records the canonical cwd and project-instruction hashes
 before model execution. Codex's events and stderr are separate bounded files
 (eight MiB each); exceeding a bound fails the host. `host-result.json` records
-its actual exit and resulting source hashes. Source evidence is bounded at
-10,000 entries and 128 MiB, and refuses special filesystem entries. The native
+its actual exit. Native preparation and final checkpoints are the default source
+evidence, so ignored build caches do not incur a second Python filesystem walk.
+`--evidence-mode full` additionally hashes the filesystem for controlled
+benchmarks; that opt-in mode is bounded at 10,000 entries and 128 MiB and refuses
+special entries. It can reject large ignored caches. The native
 `izu-response.json` retains actual workspace/checkpoint/job receipts, including
 failure or uncertainty. Cancelled jobs can lack a host-result file because the
 host was terminated; inspect the native receipt and retained source.
@@ -75,7 +87,9 @@ python3 scripts/agent-host-verify.py /absolute/path/to/host-run-unique \
 ```
 
 The verifier compares the host cwd, native workspace ID, preparation head/tree,
-actual terminal exit and caller-supplied file contents. Without `--file`, it
+actual terminal exit and caller-supplied file contents. In native evidence mode
+it checks the final head/tree through the exact launch binary before and after
+reading those files. Without `--file`, it
 proves the binding and successful execution only. Agent final messages and exit
 zero do not prove that a task was implemented correctly. Run the native exact
 candidate checks before landing; this host adapter never lands or publishes.
@@ -152,3 +166,34 @@ Default managed commands retain immediate hard cleanup unless they explicitly
 select this cooperating-adapter contract. This does not contain arbitrary
 writers which evade the selected host's cleanup. Loss of the controller still
 requires inspection and explicit stopped-writer recovery.
+
+## Short launch, continuation, inspection and cancellation
+
+The adapter now resolves `izu` and `codex` from PATH unless explicit binaries are
+supplied (packaged `izu-agent` prefers its sibling `izu`). Repository defaults
+to cwd. It creates private state and a fresh run directory under the sibling
+`.PROJECT-NAME.izu-host`; `--evidence` can
+still select a new explicit directory. The prompt can be supplied directly.
+The launcher prints the run directory to stderr before execution, so it can be
+inspected or cancelled from another terminal while the agent is running.
+
+```sh
+python3 scripts/agent-host.py start --change api --prompt "Implement the agreed API task"
+python3 scripts/agent-host.py status --evidence /absolute/run-directory
+python3 scripts/agent-host.py cancel --evidence /absolute/run-directory
+python3 scripts/agent-host.py continue --change api --prompt "Continue from the preserved source"
+izu --change api commit -m "API change"
+izu --change api land --current --check project-tests -- python3 -m unittest
+```
+
+Use `--auth-file` for the existing explicit authentication path when needed.
+Set `IZU_AUTHOR_NAME` and `IZU_AUTHOR_EMAIL`, or supply explicit author flags, for
+the commit and checked landing.
+Continuation preserves native source/history and starts a new model session.
+Checks and landing remain shared-engine operations; the adapter does not approve
+or automatically land work. The `cancel` command authenticates to a short-lived
+loopback endpoint owned by the live launcher, which interrupts its retained
+controller handle. It never signals saved PIDs. Accepted cancellation is a request,
+not a cleanup receipt: inspect the terminal run/native result. Tokens are private
+run artifacts; do not publish raw control records. A stopped endpoint is not
+reused, and a new endpoint requires a new unpredictable capability.

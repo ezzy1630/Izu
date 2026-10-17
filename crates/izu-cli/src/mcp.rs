@@ -601,7 +601,7 @@ pub fn tools() -> Result<Vec<Value>, ApiError> {
         let mut input = schema.clone();
         input["properties"]["operation"] = variant.clone();
         input["properties"]["schema_version"] = json!({"type":"integer","const":SCHEMA_VERSION});
-        tools.push(json!({"name":format!("izu_{name}"),"description":format!("Typed izu {name} operation. {}",instructions()),"inputSchema":input,"annotations":{"readOnlyHint":matches!(name,"capabilities"|"schema"|"inspect"|"status"|"diff"|"log"|"show"|"workspace_list"|"ref_list"|"tag_list"|"metadata_inspect"|"operations"|"candidate_show"|"verify"|"storage_plan"|"bundle_inspect"|"bundle_verify"|"environment_status"|"jobs_list"|"job_status"|"writer_status"),"destructiveHint":name=="storage_reclaim","openWorldHint":matches!(name,"git_clone"|"git_import"|"git_fetch"|"git_push"|"git_export"|"check"|"land_current"|"job_cancel")}}));
+        tools.push(json!({"name":format!("izu_{name}"),"description":format!("Typed izu {name} operation. {}",instructions()),"inputSchema":input,"annotations":{"readOnlyHint":matches!(name,"file_read"|"changes"|"merge_base"|"git_preflight"|"capabilities"|"schema"|"inspect"|"status"|"diff"|"log"|"show"|"workspace_list"|"ref_list"|"tag_list"|"metadata_inspect"|"operations"|"candidate_show"|"verify"|"storage_plan"|"bundle_inspect"|"bundle_verify"|"environment_status"|"jobs_list"|"job_status"|"writer_status"),"destructiveHint":name=="storage_reclaim","openWorldHint":matches!(name,"git_preflight"|"git_clone"|"git_import"|"git_fetch"|"git_push"|"git_export"|"check"|"land_current"|"job_cancel")}}));
     }
     Ok(tools)
 }

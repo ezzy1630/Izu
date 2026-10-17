@@ -89,6 +89,57 @@ print(Path(sys.argv[0]).parent / sys.argv[2])
             with self.assertRaises(ValueError):
                 identity.rust_host(text)
 
+    def test_probe_keeps_output_when_child_exits_after_empty_readiness(self):
+        # Real pipes and a real child; control only the scheduling window.
+        # An empty select result can precede the child's final write and exit.
+        local = Path(__file__).resolve().parents[2] / '.artifacts/local'
+        local.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=local) as scratch:
+            root = Path(scratch)
+            driver = root / 'driver.py'
+            driver.write_text(r'''import importlib.util,selectors,subprocess,sys,time
+from pathlib import Path
+script,status,gate=sys.argv[1:]
+sys.path.insert(0,str(Path(script).parent))
+spec=importlib.util.spec_from_file_location('probe',script)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+real_popen=subprocess.Popen
+children=[]
+def spawn(*args,**kwargs):
+    child=real_popen(*args,**kwargs);children.append(child);return child
+subprocess.Popen=spawn
+real_selector=selectors.DefaultSelector
+class ExitBetweenChecks(real_selector):
+    first=True
+    def select(self,timeout=None):
+        if self.first:
+            self.first=False
+            Path(gate).write_text('go')
+            children[0].wait(timeout=3)
+            return []
+        return super().select(timeout)
+selectors.DefaultSelector=ExitBetweenChecks
+child_code="from pathlib import Path; import sys,time; gate=Path(sys.argv[1]); deadline=time.monotonic()+3\nwhile not gate.exists():\n assert time.monotonic()<deadline; time.sleep(.001)\nprint('host: aarch64-apple-darwin',flush=True)\n"
+sys.argv=[script,'__probe-worker',status,sys.executable,'-c',child_code,gate]
+module.probe_worker()
+''')
+            status = root / 'status.json'
+            import subprocess
+            with (root/'stdout').open('wb') as out, (root/'stderr').open('wb') as err:
+                process = subprocess.Popen([sys.executable, '-B', str(driver), str(identity.__file__),
+                    str(status), str(root/'gate')], stdin=subprocess.PIPE, stdout=out, stderr=err,
+                    start_new_session=True)
+                try:
+                    deadline = time.monotonic() + 5
+                    while not status.exists():
+                        self.assertLess(time.monotonic(), deadline, (root/'stderr').read_text())
+                        time.sleep(.01)
+                    self.assertEqual(json.loads(status.read_text())['exit_code'], 0)
+                finally:
+                    cleanup = identity.stop_probe(process)
+                    self.assertTrue(cleanup['leader_reaped'])
+            self.assertEqual((root/'stdout').read_text(), 'host: aarch64-apple-darwin\n')
+
     def test_probe_rejects_nonzero_and_bounded_output(self):
         local = Path(__file__).resolve().parents[2] / '.artifacts/local'
         local.mkdir(parents=True, exist_ok=True)

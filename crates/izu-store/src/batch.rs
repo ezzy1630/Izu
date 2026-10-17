@@ -5,7 +5,7 @@ use crate::objects::{StreamFrame, TemporaryEntry, object_name, object_parts};
 use crate::{DurableBoundary, Result, Store, StoreError, durable_dir, io_error, kernel_file};
 use izu_model::{CancellationToken, ObjectId, ObjectKind};
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 
 /// A content address for encoding metadata, not a persistence acknowledgement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +28,12 @@ struct PreparedObject<'a> {
     id: ObjectId,
     kind: ObjectKind,
     length: u64,
-    temporary: TemporaryEntry<'a>,
+    source: PreparedSource<'a>,
+}
+
+enum PreparedSource<'a> {
+    Temporary(TemporaryEntry<'a>),
+    Existing(Identity),
 }
 
 struct PublishedObject {
@@ -79,6 +84,97 @@ impl ObjectBatch<'_> {
         cancel: &CancellationToken,
     ) -> Result<StagedObjectId> {
         self.stage_stream(ObjectKind::Blob, reader, length, cancel)
+    }
+
+    /// Reuse a known blob only after full stored-object validation and a byte-for-byte
+    /// source comparison. No timestamp or hash-only equality shortcut is used.
+    pub fn stage_blob_reusing<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        length: u64,
+        previous: ObjectId,
+        cancel: &CancellationToken,
+    ) -> Result<StagedObjectId> {
+        if matches!(self.state, BatchState::Aborted) {
+            return Err(StoreError::BatchAborted);
+        }
+        let result = self.reuse_blob(reader, length, previous, cancel);
+        if result.is_err() {
+            self.state = BatchState::Aborted;
+        }
+        result
+    }
+
+    fn reuse_blob<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        length: u64,
+        previous: ObjectId,
+        cancel: &CancellationToken,
+    ) -> Result<StagedObjectId> {
+        cancel.check()?;
+        let start = reader
+            .stream_position()
+            .map_err(|e| io_error("source position", e))?;
+        let (mut existing, _) = self.store.open_object_with_shard(previous)?;
+        let header =
+            self.store
+                .verify_file(&mut existing, previous, Some(ObjectKind::Blob), cancel)?;
+        let identity = Identity::file(&existing)?;
+        let mut equal = header.payload_len == length;
+        if equal {
+            existing
+                .seek(SeekFrom::Start(izu_model::FRAME_HEADER_LEN as u64))
+                .map_err(|e| io_error("rewind reused blob", e))?;
+            let mut remaining = length;
+            let mut source = [0_u8; crate::CHUNK_BYTES];
+            let mut stored = [0_u8; crate::CHUNK_BYTES];
+            while remaining > 0 {
+                cancel.check()?;
+                let count = remaining.min(crate::CHUNK_BYTES as u64) as usize;
+                reader
+                    .read_exact(&mut source[..count])
+                    .map_err(|e| io_error("read reused source", e))?;
+                existing
+                    .read_exact(&mut stored[..count])
+                    .map_err(|e| io_error("read reused blob", e))?;
+                if source[..count] != stored[..count] {
+                    equal = false;
+                    break;
+                }
+                remaining -= count as u64;
+            }
+            if equal {
+                let mut extra = [0];
+                if reader
+                    .read(&mut extra)
+                    .map_err(|e| io_error("source end", e))?
+                    != 0
+                {
+                    return Err(StoreError::InputLengthMismatch);
+                }
+            }
+        }
+        if !equal {
+            reader
+                .seek(SeekFrom::Start(start))
+                .map_err(|e| io_error("rewind changed source", e))?;
+            return self.stage_blob(reader, length, cancel);
+        }
+        let total = self.reserve_record(length)?;
+        self.submission.check_layout(self.store)?;
+        self.submission.check_file(&existing)?;
+        kernel_file(&existing, &self.store.options)?;
+        self.store
+            .boundary(DurableBoundary::BatchObjectKernelSynced)?;
+        self.prepared.push(PreparedObject {
+            id: previous,
+            kind: ObjectKind::Blob,
+            length,
+            source: PreparedSource::Existing(identity),
+        });
+        self.payload_bytes = total;
+        Ok(StagedObjectId(previous))
     }
 
     pub fn stage(
@@ -137,7 +233,7 @@ impl ObjectBatch<'_> {
             id,
             kind,
             length,
-            temporary: temp.into_entry(),
+            source: PreparedSource::Temporary(temp.into_entry()),
         });
         self.payload_bytes = total;
         Ok(StagedObjectId(id))
@@ -211,7 +307,19 @@ impl ObjectBatch<'_> {
         self.submission.check_layout(self.store)?;
         for prepared in &self.prepared {
             cancel.check()?;
-            let mut file = prepared.temporary.open()?;
+            let mut file = match &prepared.source {
+                PreparedSource::Temporary(temporary) => temporary.open()?,
+                PreparedSource::Existing(identity) => {
+                    let file = self.store.open_object(prepared.id)?;
+                    if Identity::file(&file)? != *identity {
+                        return Err(StoreError::Corrupt {
+                            kind: "reused blob",
+                            reason: "identity changed",
+                        });
+                    }
+                    file
+                }
+            };
             self.submission.check_file(&file)?;
             let header =
                 self.store
@@ -234,7 +342,19 @@ impl ObjectBatch<'_> {
         self.submission.check_layout(self.store)?;
         for prepared in &self.prepared {
             cancel.check()?;
-            let mut file = prepared.temporary.open()?;
+            let mut file = match &prepared.source {
+                PreparedSource::Temporary(temporary) => temporary.open()?,
+                PreparedSource::Existing(identity) => {
+                    let file = self.store.open_object(prepared.id)?;
+                    if Identity::file(&file)? != *identity {
+                        return Err(StoreError::Corrupt {
+                            kind: "reused blob",
+                            reason: "identity changed",
+                        });
+                    }
+                    file
+                }
+            };
             self.submission.check_file(&file)?;
             let name = object_name(prepared.id);
             let (prefix, suffix) = object_parts(&name)?;
@@ -250,11 +370,19 @@ impl ObjectBatch<'_> {
             let mut actual = match shard.open_read(suffix) {
                 Ok(actual) => actual,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    match self
-                        .store
-                        .temporary
-                        .hard_link(prepared.temporary.name()?, &shard, suffix)
-                    {
+                    match self.store.temporary.hard_link(
+                        match &prepared.source {
+                            PreparedSource::Temporary(temporary) => temporary.name()?,
+                            PreparedSource::Existing(_) => {
+                                return Err(StoreError::Corrupt {
+                                    kind: "reused blob",
+                                    reason: "reused object disappeared",
+                                });
+                            }
+                        },
+                        &shard,
+                        suffix,
+                    ) {
                         Ok(()) => {}
                         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                         Err(error) => {
@@ -275,7 +403,17 @@ impl ObjectBatch<'_> {
                 prepared.length,
                 cancel,
             )?;
-            prepared.temporary.check()?;
+            if let PreparedSource::Temporary(temporary) = &prepared.source {
+                temporary.check()?;
+            }
+            if let PreparedSource::Existing(identity) = &prepared.source
+                && Identity::file(&actual)? != *identity
+            {
+                return Err(StoreError::Corrupt {
+                    kind: "reused blob",
+                    reason: "identity changed",
+                });
+            }
             self.submission
                 .record_object(prepared.id, &actual, &shard)?;
             let identity = Identity::file(&actual)?;
@@ -289,7 +427,9 @@ impl ObjectBatch<'_> {
                 id: prepared.id,
                 identity,
             });
-            prepared.temporary.remove()?;
+            if let PreparedSource::Temporary(temporary) = &prepared.source {
+                temporary.remove()?;
+            }
         }
         self.submission.submit_directories(self.store, cancel)?;
         kernel_file(self.store.temporary.file(), &self.store.options)?;

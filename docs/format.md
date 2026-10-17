@@ -333,3 +333,24 @@ The following valid Pending Evidence (6) payload is 509 bytes, with ID
 Its references are illustrative IDs; they still require closure verification.
 Valid canonical pending bytes do not establish a passed check or permission to
 launch a process.
+
+## Metadata v3: explicit sparse workspace scope
+
+Metadata v3 retains object framing, revision/tree encoding and all v2 tag rules.
+`RepositoryView.metadata_version` is `"v3"`. `WorkspaceRecord.sparse_paths` is
+omitted for full scope or is a nonempty, sorted, unique array of validated native
+paths. It is rejected in v1/v2 views. Absent fields retain the exact prior
+canonical encodings and object IDs. Unknown versions remain rejected.
+
+A sparse workspace's working tree is always a complete logical tree. Capturing
+selected paths overlays observed content onto that tree; absence outside scope
+is not deletion. Scope affects source materialization, not revision ancestry,
+Git export, bundles or integration checks. Bundle restoration preserves the
+selected workspace's scope. Scope expansion is additive and preserves physical
+source before publication. Its recovery operation retains the physical input
+tree; failures do not imply that already-created files disappeared.
+
+Explicit migration requires the exact current operation and appends an operation.
+It never rewrites old objects. A v3 repository cannot be downgraded by requesting
+v2, even after expanding every workspace to full scope. Previous readers reject
+the new version, preventing them from misinterpreting omitted files as deletions.

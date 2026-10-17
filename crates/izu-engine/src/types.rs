@@ -293,3 +293,30 @@ pub struct WriterIntent {
     pub token: WriterToken,
     pub created_at_unix_ms: i64,
 }
+
+/// A bounded page of source bytes; binary data is preserved exactly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FilePage {
+    pub revision: RevisionId,
+    pub path: RepoPath,
+    pub blob: ObjectId,
+    pub mode: FileMode,
+    pub offset: u64,
+    pub total_bytes: u64,
+    pub bytes: Vec<u8>,
+    pub next_offset: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangePage {
+    pub before: RevisionId,
+    pub after: RevisionId,
+    pub entries: Vec<PathChange>,
+    pub next_after: Option<RepoPath>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkspaceScopeReceipt {
+    pub operation: OperationId,
+    pub recovery_operation: OperationId,
+    pub workspace: WorkspaceState,
+}

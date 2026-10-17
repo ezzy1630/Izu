@@ -114,6 +114,10 @@ fn git_clone_materializes_default_branch_and_preserves_occupied_destination() {
     fs::write(upstream.join("source.txt"), b"adopt this source\n").expect("upstream bytes");
     git(&["add", "source.txt"]);
     git(&["commit", "-m", "Owned upstream source"]);
+    let preflight = fixture.ok(&["git", "preflight", upstream.to_str().unwrap()]);
+    assert_eq!(preflight["supported"], true);
+    assert_eq!(preflight["inventory"]["commits"], 1);
+    assert!(!fixture.root.join(".izu").exists());
     let destination = fixture.root.join("adopted");
     let receipt = fixture.ok(&[
         "git",
@@ -3067,4 +3071,65 @@ fn wait_for_path(path: &Path, limit: Duration) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn sparse_workspace_and_checkout_free_queries_work_through_cli_json_and_mcp() {
+    let fixture = Fixture::new();
+    fixture.ok(&["init", "."]);
+    fs::write(fixture.root.join("included"), b"hello").unwrap();
+    fs::write(fixture.root.join("omitted"), b"retained").unwrap();
+    let commit = fixture.ok(&["commit", "-m", "baseline"]);
+    let revision = text(&commit, "revision");
+    let format = fixture.ok(&["format", "inspect"]);
+    fixture.ok(&[
+        "format",
+        "migrate",
+        "--to",
+        "3",
+        "--expect-operation",
+        &text(&format, "operation"),
+    ]);
+    let sparse = fixture.temp.as_ref().unwrap().path().join("sparse");
+    let workspace = fixture.ok(&[
+        "workspace",
+        "sparse-start",
+        "scoped",
+        sparse.to_str().unwrap(),
+        "--from",
+        &revision,
+        "--path",
+        "included",
+    ]);
+    assert!(sparse.join("included").exists());
+    assert!(!sparse.join("omitted").exists());
+    let file = fixture.ok(&[
+        "file", &revision, "omitted", "--offset", "1", "--limit", "3",
+    ]);
+    assert_eq!(file["bytes"], json!([101, 116, 97]));
+    assert_eq!(file["next_offset"], 4);
+    let base = fixture.ok(&["merge-base", &revision, &revision]);
+    assert_eq!(base["merge_base"], revision);
+    let changes = fixture.ok(&["changes", &revision, &revision, "--path", "omitted"]);
+    assert_eq!(changes["entries"], json!([]));
+    let mut client = McpClient::new(&fixture);
+    client.send(
+        &json!({"jsonrpc":"2.0","id":901,"method":"tools/call","params":{
+        "_meta":modern_meta(),"name":"izu_file_read","arguments":{"schema_version":1,"operation":{
+            "kind":"file_read","context":{"repository":fixture.root,"workspace":null},
+            "revision":revision,"path":"omitted","offset":0,"limit":64}}}}),
+    );
+    let reply = client.receive();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(
+        reply.pointer("/result/structuredContent/outcome/result/data/bytes"),
+        Some(&json!(b"retained".to_vec()))
+    );
+    drop(client);
+    let (output, expanded) = fixture.json(&json!({"schema_version":1,"operation":{
+        "kind":"workspace_expand","context":{"repository":fixture.root,"workspace":workspace["id"],"expected":workspace["expected"]},
+        "selection":{"kind":"all"}}}));
+    assert!(output.status.success(), "{expanded}");
+    assert_eq!(fs::read(sparse.join("omitted")).unwrap(), b"retained");
+    fixture.ok(&["verify"]);
 }

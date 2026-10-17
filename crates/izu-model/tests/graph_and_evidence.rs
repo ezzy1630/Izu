@@ -112,6 +112,7 @@ fn operation_closure_contains_every_view_edge_without_filesystem_side_effects() 
         workspaces: BTreeMap::from([(
             WorkspaceId::from_bytes([1; 16]),
             WorkspaceRecord {
+                sparse_paths: None,
                 name: "main".into(),
                 root: "/old/never-materialize".into(),
                 head: revision(5),
