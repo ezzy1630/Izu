@@ -2313,8 +2313,15 @@ fn mcp_healthy_exchange_retains_bounded_raw_transport_observations() {
     let fixture = Fixture::new();
     let mut client = McpClient::new(&fixture);
     let request = modern_rpc(702, "server/discover");
-    client.send(&request);
-    assert_eq!(client.receive()["id"], 702);
+    let following = serde_json::to_string(&modern_rpc(703, "tools/list")).unwrap();
+    let split = following.len() / 2;
+    let input = format!("{request}\n{}", &following[..split]);
+    // Discovery must arrive while stdin remains open with an incomplete next
+    // frame. A reader waiting for that frame must not hold up the first reply.
+    client.raw(&input);
+    let discovered = client.receive();
+    assert_eq!(discovered["id"], 702);
+    assert_eq!(discovered["result"]["resultType"], "complete");
     let observed = client.diagnostic("healthy exchange");
     assert!(
         observed["stdout"]["total_bytes"]
@@ -2324,11 +2331,16 @@ fn mcp_healthy_exchange_retains_bounded_raw_transport_observations() {
     );
     assert_eq!(observed["stderr"]["total_bytes"], 0);
     assert_eq!(
-        serde_json::from_slice::<Value>(&diagnostic_bytes(
-            &observed["sent_requests"]["retained_tail_bytes"]
-        ))
-        .expect("request bytes"),
-        request
+        diagnostic_bytes(&observed["sent_requests"]["retained_tail_bytes"]),
+        input.as_bytes()
+    );
+    client.raw(&format!("{}\n", &following[split..]));
+    let listed = client.receive();
+    assert_eq!(listed["id"], 703);
+    assert!(
+        listed["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
     );
     client.close_input();
     assert!(

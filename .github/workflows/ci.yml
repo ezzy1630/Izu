@@ -53,13 +53,6 @@ jobs:
         run: cargo test --workspace --locked
       - name: Test injected persistence failures
         run: cargo test -p izu-store -p izu-engine -p izu-bundle -p izu-runtime --features izu-store/fault-injection,izu-engine/fault-injection,izu-bundle/fault-injection,izu-runtime/fault-injection --locked
-      - name: Diagnose cancellation on the failing macOS runner
-        if: always() && matrix.os == 'macos-14'
-        shell: bash
-        run: |
-          for attempt in {1..64}; do
-            cargo test -p izu-runtime --features fault-injection --locked --test process_workflows active_check_cancellation_records_terminal_attempt_and_stops_writer -- --exact --nocapture || exit 1
-          done
       - name: Check fault-injection targets
         run: cargo clippy -p izu-store -p izu-engine -p izu-bundle -p izu-runtime --all-targets --features izu-store/fault-injection,izu-engine/fault-injection,izu-bundle/fault-injection,izu-runtime/fault-injection --locked -- -D warnings
       - name: Build release executables

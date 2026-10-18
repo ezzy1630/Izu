@@ -55,6 +55,27 @@ deadlines and persistence checks are unchanged. The corresponding Intel artifact
 upload failed independently after five GitHub artifact-service request timeouts;
 that was neither a billing refusal nor missing diagnostic files.
 
+## macOS cancellation and a concurrent fork
+
+Public ARM64 CI reported a cancelled check whose leader was killed and reaped,
+but whose process group remained present at the unchanged five-second deadline.
+The runtime refused close and retained the failed attempt, writer intent and files.
+A local reproduction populated an owned group and forked one final child during
+shutdown. It produced the same cleanup failure, and a process-state capture
+showed a live `sleep` child in that group with its parent already reaped.
+
+The regression failed before the fix on attempt 3. Cleanup now observes leader
+exit without reaping, performs a final group sweep while the identity is still
+owned, then reaps and requires independently observed group absence. The 32-case
+regression and a separate 500-case fork probe passed after the change. No real
+signals follow reaping, no deadline is increased, and escaped or still-present
+groups remain uncertain. The original CI run did not retain its process table,
+so the reproduction establishes this concrete failure mechanism without claiming
+to identify the exact surviving process in that earlier run.
+
+Runtime test failures now capture only their recorded groups' process identifiers
+and state and preserve their synthetic fixtures in CI artifacts.
+
 ## MCP first discovery
 
 The failed serial test timed out waiting 15 seconds for the initial discovery
@@ -72,6 +93,10 @@ following frame to keep the input reader occupied. The slowest response was
 the failed receipt cannot prove that these were the exact failed bytes.
 
 The historical cause remains unresolved. Passing reruns are not a fix. Current
+first-discovery coverage also sends a partial following frame, requires the
+initial reply before completing that frame or closing stdin, then completes the
+next exchange. All 16 current MCP tests passed locally, including output failure,
+backpressure, cancellation and before-cleanup diagnostics. Current
 tests retain raw failure evidence and capture child/parent stacks and pipe
 ownership before cleanup at the unchanged deadline. A recurrence with that
 capture is the next useful evidence; more passing soak counts cannot substitute

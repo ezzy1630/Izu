@@ -661,3 +661,40 @@ fn long_tmpdir_driver_process() {
     assert!(result.cleanup.cooperative_stop_succeeded());
     concurrent_worker_cohorts(1);
 }
+
+#[test]
+fn cancellation_sweeps_children_forked_during_group_shutdown() {
+    let dir = tempfile::tempdir().unwrap();
+    // A populated group makes the kernel's member-snapshot race observable:
+    // the shell can create its final child while the snapshot is signalled.
+    for attempt in 0..32 {
+        let ready = dir.path().join(format!("ready-{attempt}"));
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            r#"i=0; while [ "$i" -lt 32 ]; do /bin/sleep 10 & i=$((i+1)); done; printf ready > "$1"; /bin/sleep 10 & wait"#,
+            "fixture",
+        ]).arg(&ready);
+        let mut process = OwnedProcess::spawn_until(
+            &mut command,
+            Instant::now() + Duration::from_secs(5),
+            &|| false,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "fork fixture did not become ready"
+            );
+            thread::yield_now();
+        }
+        let report = process.stop(Duration::from_secs(1));
+        if !report.cooperative_stop_succeeded() {
+            // The leader has already been reaped: never signal its numeric ID
+            // again. All synthetic descendants expire on their own in 10s.
+            thread::sleep(Duration::from_secs(11));
+            panic!("late child escaped cancellation on attempt {attempt}: {report:?}");
+        }
+    }
+}

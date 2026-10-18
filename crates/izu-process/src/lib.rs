@@ -294,7 +294,7 @@ impl OwnedProcess {
         .map(|status| status.is_some())
         .map_err(io::Error::from)
     }
-    /// Idempotent. Kill the owned group before any reaping, then bound reap time.
+    /// Idempotent. Sweep the owned group before reaping, then prove absence.
     /// No TERM grace is used: untrusted descendants may ignore TERM.
     pub fn stop(&mut self, timeout: Duration) -> CleanupReport {
         if let Some(report) = &self.cleanup {
@@ -321,14 +321,31 @@ impl OwnedProcess {
         };
         if group_signal != GroupSignal::OwnershipLost {
             loop {
-                match self.child.try_wait() {
-                    Ok(Some(status)) => {
-                        report.leader_reaped = true;
-                        report.leader_status = Some(status);
+                match self.observe_exit() {
+                    Ok(true) => {
+                        // A group signal visits a snapshot of its members. A
+                        // child forked during that visit can survive the first
+                        // KILL. Keep the exited leader unreaped (reserving its
+                        // PID/group identity) until a final sweep catches it.
+                        // Descendants can still race or escape this cooperative
+                        // boundary; only the absence probe below proves cleanup.
+                        // Retain the initial delivery diagnostic. This sweep
+                        // is best effort; only observed absence authorizes success.
+                        let _ = kill_process_group(self.pid, Signal::KILL);
+                        if let Ok(Some(status)) = self.child.try_wait() {
+                            report.leader_reaped = true;
+                            report.leader_status = Some(status);
+                        }
                         break;
                     }
-                    Ok(None) => {}
-                    Err(_) => break,
+                    Ok(false) => {}
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => {
+                        if error.raw_os_error() == Some(rustix::io::Errno::CHILD.raw_os_error()) {
+                            report.group_signal = GroupSignal::OwnershipLost;
+                        }
+                        break;
+                    }
                 }
                 if deadline.is_none_or(|d| Instant::now() >= d) {
                     break;
