@@ -81,6 +81,53 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         if std::thread::panicking() {
+            // Capture only identifiers/state for this fixture's recorded groups;
+            // never signal numeric IDs recovered from persisted metadata.
+            if let Ok(bytes) = fs::read(self.repository.metadata_path().join("runtime/state.json"))
+                && let Ok(state) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            {
+                fn groups(value: &serde_json::Value, ids: &mut Vec<u64>) {
+                    match value {
+                        serde_json::Value::Object(fields) => {
+                            if let Some(pid) = fields.get("worker_pid").and_then(|v| v.as_u64()) {
+                                ids.push(pid);
+                            }
+                            for value in fields.values() {
+                                groups(value, ids);
+                            }
+                        }
+                        serde_json::Value::Array(values) => {
+                            for value in values {
+                                groups(value, ids);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let mut ids = Vec::new();
+                groups(&state, &mut ids);
+                if !ids.is_empty()
+                    && let Ok(output) = std::process::Command::new("/bin/ps")
+                        .args(["-axo", "pid=,ppid=,pgid=,state=,comm="])
+                        .output()
+                {
+                    let table = String::from_utf8_lossy(&output.stdout);
+                    let owned: Vec<_> = table
+                        .lines()
+                        .filter(|line| {
+                            line.split_whitespace()
+                                .nth(2)
+                                .and_then(|id| id.parse::<u64>().ok())
+                                .is_some_and(|id| ids.contains(&id))
+                        })
+                        .collect();
+                    eprintln!("IZU_RUNTIME_FAILURE_GROUPS {ids:?}\n{}", owned.join("\n"));
+                    let _ = fs::write(
+                        self.base.join("failure-process-groups.txt"),
+                        owned.join("\n"),
+                    );
+                }
+            }
             self._temporary.disable_cleanup(true);
             eprintln!(
                 "IZU_RUNTIME_FAILURE_FIXTURE {}",
