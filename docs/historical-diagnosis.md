@@ -95,13 +95,31 @@ the failed receipt cannot prove that these were the exact failed bytes.
 The historical cause remains unresolved. Passing reruns are not a fix. Current
 first-discovery coverage also sends a partial following frame, requires the
 initial reply before completing that frame or closing stdin, then completes the
-next exchange. All 16 current MCP tests passed locally, including output failure,
+next exchange. All 17 current MCP tests passed locally, including output failure,
 backpressure, cancellation and before-cleanup diagnostics. Current
 tests retain raw failure evidence and capture child/parent stacks and pipe
 ownership before cleanup at the unchanged deadline. A recurrence with that
 capture is the next useful evidence; more passing soak counts cannot substitute
 for it. Fixed output-shutdown and initialization-cost issues remain separately
 attributed defects.
+
+A later Intel CI run exposed a diagnostic harness error, not a discovery failure:
+the controlled command had timed out and been reaped, but a sibling native stack
+probe was still running when the seven-second collector bound expired. The owner
+stopped the group and marked the command interrupted, yet left the top-level
+capture status as `running`. A real sleeping-child regression reproduces that
+stale state. The owner now records `interrupted`; the command test still requires
+its controlled terminal result, bounded output, every native launch and descendant
+absence. It no longer requires unrelated probes to finish before an intentionally
+bounded collector stops. The 15-second response and seven-second collector
+limits are unchanged; incomplete controlled evidence still fails the test.
+
+During that work, one local EOF/backpressure test exceeded its five-second exit
+bound with the server still alive. A subsequent six-round instrumented run passed,
+which does not explain the failure. Its raw observations are retained; the EOF
+failure path now captures live stacks and pipe ownership before cleanup, just as
+the response-timeout path does. This observation remains under investigation.
+
 
 ## Use the public GitHub repository
 

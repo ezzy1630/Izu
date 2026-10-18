@@ -1845,6 +1845,9 @@ impl McpClient {
                 if outcome.termination != izu_process::Termination::Completed
                     || report["status"] != "completed"
                 {
+                    if report["status"] == "running" {
+                        report["status"] = json!("interrupted");
+                    }
                     for row in report["commands"]
                         .as_array_mut()
                         .expect("command progress list")
@@ -2219,6 +2222,52 @@ fn mcp_diagnostic_slow_startup_retains_report_and_helper_stderr() {
 
 #[cfg(unix)]
 #[test]
+fn mcp_diagnostic_running_capture_is_marked_interrupted_after_watchdog() {
+    let fixture = Fixture::new();
+    let child = Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("owned live transport");
+    let mut client = McpClient::from_child(child);
+    let wrapper = fixture.root.join("running-diagnostic.py");
+    fs::write(
+        &wrapper,
+        r#"import json,subprocess,sys,time
+from pathlib import Path
+output=Path(sys.argv[sys.argv.index('--output')+1])
+child=subprocess.Popen(['/bin/sleep','30'])
+report=json.loads((output/'capture.json').read_text())
+report.update(status='running',commands=[dict(kind='controlled',state='running',pid=child.pid)])
+(output/'capture.json').write_text(json.dumps(report))
+print('controlled running diagnostic',file=sys.stderr,flush=True)
+time.sleep(30)
+"#,
+    )
+    .unwrap();
+    let failure = client.capture_deadline_with_script(&wrapper);
+    let directory = Path::new(failure["directory"].as_str().unwrap());
+    let report: Value =
+        serde_json::from_slice(&fs::read(directory.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["owner"]["termination"], "TimedOut", "{report}");
+    assert_eq!(report["owner"]["cleanup_confirmed"], true, "{report}");
+    assert_eq!(report["status"], "interrupted", "{report}");
+    assert_eq!(report["commands"][0]["state"], "interrupted", "{report}");
+    let pid = report["commands"][0]["pid"].as_u64().unwrap();
+    let observed = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+        .unwrap();
+    assert!(
+        observed.stdout.is_empty(),
+        "diagnostic child survived: {observed:?}"
+    );
+    assert!(client.child.try_wait().unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
 fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendants() {
     let fixture = Fixture::new();
     let child = Command::new("/usr/bin/python3")
@@ -2239,7 +2288,17 @@ fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendan
             &fs::read(directory.join("capture.json")).expect("native command report"),
         )
         .expect("capture JSON");
-        assert_eq!(report["status"], "completed", "{report}");
+        // The seven-second owner budget also covers Python startup and real
+        // native sibling probes. A slow sibling may be interrupted, but the
+        // controlled command's terminal result/output and descendant absence
+        // below remain mandatory; partial controlled evidence never passes.
+        match report["status"].as_str() {
+            Some("completed") => {}
+            Some("interrupted") => {
+                assert_eq!(report["owner"]["termination"], "TimedOut", "{report}")
+            }
+            _ => panic!("capture has no terminal state: {report}"),
+        }
         assert_eq!(report["owner"]["cleanup_confirmed"], true, "{report}");
         let rows = report["commands"].as_array().expect("command progress");
         for kind in ["pipe_ownership", "child_stack", "parent_stack"] {
@@ -2423,8 +2482,9 @@ fn mcp_eof_exits_with_retained_unread_stdout_and_bounded_queues() {
     let status = client
         .wait_exit(Duration::from_secs(5), false)
         .unwrap_or_else(|| {
+            let native = client.capture_deadline();
             panic!(
-                "retained output blocked EOF: {}",
+                "retained output blocked EOF: {}; native capture: {native}",
                 client.diagnostic("R5 condition")
             )
         });
