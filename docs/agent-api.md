@@ -269,3 +269,25 @@ they cannot silently erase a new job's shutdown policy during shared registry
 updates. Immediate-only registries retain their original encoding. The feature
 remains after jobs finish; use a compatible runtime for that registry. Native
 history and bundle format versions are independent of this runtime extension.
+
+## Captured-history queries
+
+`file_read` accepts an explicit revision, portable path, byte offset and page
+limit (1..65536). It returns exact binary bytes, mode, object identity, total
+length and the next offset. It verifies the complete blob before returning;
+pagination bounds output, not underlying blob verification work.
+`changes` accepts two explicit revisions, a path selection, an optional exclusive
+`after_path` cursor and a limit (1..1000). Results are ordered by native path;
+`next_after` is present only when another page exists. `merge_base` accepts two
+explicit revisions. All three query immutable local history without capturing
+or creating a working directory. They do not require an online service.
+
+`git_preflight` uses the same source, refs, tags and transport as clone. It returns
+`supported`, blockers, the inspected inventory, warnings and omitted refs without
+initializing a native destination. Source/transport failures remain typed errors.
+Preflight may download and inspect bounded source data in private staging; it is
+not merely a remote-ref listing. Signature-byte preservation is not verification.
+
+`workspace_sparse_start` requires metadata v3 and explicit paths.
+`workspace_expand` adds paths or selects all; it cannot contract scope or discard
+files. See the native format and CLI guides for migration and recovery rules.

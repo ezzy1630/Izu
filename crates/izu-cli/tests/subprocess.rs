@@ -114,6 +114,10 @@ fn git_clone_materializes_default_branch_and_preserves_occupied_destination() {
     fs::write(upstream.join("source.txt"), b"adopt this source\n").expect("upstream bytes");
     git(&["add", "source.txt"]);
     git(&["commit", "-m", "Owned upstream source"]);
+    let preflight = fixture.ok(&["git", "preflight", upstream.to_str().unwrap()]);
+    assert_eq!(preflight["supported"], true);
+    assert_eq!(preflight["inventory"]["commits"], 1);
+    assert!(!fixture.root.join(".izu").exists());
     let destination = fixture.root.join("adopted");
     let receipt = fixture.ok(&[
         "git",
@@ -1841,6 +1845,9 @@ impl McpClient {
                 if outcome.termination != izu_process::Termination::Completed
                     || report["status"] != "completed"
                 {
+                    if report["status"] == "running" {
+                        report["status"] = json!("interrupted");
+                    }
                     for row in report["commands"]
                         .as_array_mut()
                         .expect("command progress list")
@@ -2215,6 +2222,52 @@ fn mcp_diagnostic_slow_startup_retains_report_and_helper_stderr() {
 
 #[cfg(unix)]
 #[test]
+fn mcp_diagnostic_running_capture_is_marked_interrupted_after_watchdog() {
+    let fixture = Fixture::new();
+    let child = Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("owned live transport");
+    let mut client = McpClient::from_child(child);
+    let wrapper = fixture.root.join("running-diagnostic.py");
+    fs::write(
+        &wrapper,
+        r#"import json,subprocess,sys,time
+from pathlib import Path
+output=Path(sys.argv[sys.argv.index('--output')+1])
+child=subprocess.Popen(['/bin/sleep','30'])
+report=json.loads((output/'capture.json').read_text())
+report.update(status='running',commands=[dict(kind='controlled',state='running',pid=child.pid)])
+(output/'capture.json').write_text(json.dumps(report))
+print('controlled running diagnostic',file=sys.stderr,flush=True)
+time.sleep(30)
+"#,
+    )
+    .unwrap();
+    let failure = client.capture_deadline_with_script(&wrapper);
+    let directory = Path::new(failure["directory"].as_str().unwrap());
+    let report: Value =
+        serde_json::from_slice(&fs::read(directory.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["owner"]["termination"], "TimedOut", "{report}");
+    assert_eq!(report["owner"]["cleanup_confirmed"], true, "{report}");
+    assert_eq!(report["status"], "interrupted", "{report}");
+    assert_eq!(report["commands"][0]["state"], "interrupted", "{report}");
+    let pid = report["commands"][0]["pid"].as_u64().unwrap();
+    let observed = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+        .unwrap();
+    assert!(
+        observed.stdout.is_empty(),
+        "diagnostic child survived: {observed:?}"
+    );
+    assert!(client.child.try_wait().unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
 fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendants() {
     let fixture = Fixture::new();
     let child = Command::new("/usr/bin/python3")
@@ -2235,7 +2288,17 @@ fn mcp_diagnostic_command_timeout_and_failure_retain_progress_and_stop_descendan
             &fs::read(directory.join("capture.json")).expect("native command report"),
         )
         .expect("capture JSON");
-        assert_eq!(report["status"], "completed", "{report}");
+        // The seven-second owner budget also covers Python startup and real
+        // native sibling probes. A slow sibling may be interrupted, but the
+        // controlled command's terminal result/output and descendant absence
+        // below remain mandatory; partial controlled evidence never passes.
+        match report["status"].as_str() {
+            Some("completed") => {}
+            Some("interrupted") => {
+                assert_eq!(report["owner"]["termination"], "TimedOut", "{report}")
+            }
+            _ => panic!("capture has no terminal state: {report}"),
+        }
         assert_eq!(report["owner"]["cleanup_confirmed"], true, "{report}");
         let rows = report["commands"].as_array().expect("command progress");
         for kind in ["pipe_ownership", "child_stack", "parent_stack"] {
@@ -2309,8 +2372,15 @@ fn mcp_healthy_exchange_retains_bounded_raw_transport_observations() {
     let fixture = Fixture::new();
     let mut client = McpClient::new(&fixture);
     let request = modern_rpc(702, "server/discover");
-    client.send(&request);
-    assert_eq!(client.receive()["id"], 702);
+    let following = serde_json::to_string(&modern_rpc(703, "tools/list")).unwrap();
+    let split = following.len() / 2;
+    let input = format!("{request}\n{}", &following[..split]);
+    // Discovery must arrive while stdin remains open with an incomplete next
+    // frame. A reader waiting for that frame must not hold up the first reply.
+    client.raw(&input);
+    let discovered = client.receive();
+    assert_eq!(discovered["id"], 702);
+    assert_eq!(discovered["result"]["resultType"], "complete");
     let observed = client.diagnostic("healthy exchange");
     assert!(
         observed["stdout"]["total_bytes"]
@@ -2320,11 +2390,16 @@ fn mcp_healthy_exchange_retains_bounded_raw_transport_observations() {
     );
     assert_eq!(observed["stderr"]["total_bytes"], 0);
     assert_eq!(
-        serde_json::from_slice::<Value>(&diagnostic_bytes(
-            &observed["sent_requests"]["retained_tail_bytes"]
-        ))
-        .expect("request bytes"),
-        request
+        diagnostic_bytes(&observed["sent_requests"]["retained_tail_bytes"]),
+        input.as_bytes()
+    );
+    client.raw(&format!("{}\n", &following[split..]));
+    let listed = client.receive();
+    assert_eq!(listed["id"], 703);
+    assert!(
+        listed["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
     );
     client.close_input();
     assert!(
@@ -2407,8 +2482,9 @@ fn mcp_eof_exits_with_retained_unread_stdout_and_bounded_queues() {
     let status = client
         .wait_exit(Duration::from_secs(5), false)
         .unwrap_or_else(|| {
+            let native = client.capture_deadline();
             panic!(
-                "retained output blocked EOF: {}",
+                "retained output blocked EOF: {}; native capture: {native}",
                 client.diagnostic("R5 condition")
             )
         });
@@ -3067,4 +3143,65 @@ fn wait_for_path(path: &Path, limit: Duration) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn sparse_workspace_and_checkout_free_queries_work_through_cli_json_and_mcp() {
+    let fixture = Fixture::new();
+    fixture.ok(&["init", "."]);
+    fs::write(fixture.root.join("included"), b"hello").unwrap();
+    fs::write(fixture.root.join("omitted"), b"retained").unwrap();
+    let commit = fixture.ok(&["commit", "-m", "baseline"]);
+    let revision = text(&commit, "revision");
+    let format = fixture.ok(&["format", "inspect"]);
+    fixture.ok(&[
+        "format",
+        "migrate",
+        "--to",
+        "3",
+        "--expect-operation",
+        &text(&format, "operation"),
+    ]);
+    let sparse = fixture.temp.as_ref().unwrap().path().join("sparse");
+    let workspace = fixture.ok(&[
+        "workspace",
+        "sparse-start",
+        "scoped",
+        sparse.to_str().unwrap(),
+        "--from",
+        &revision,
+        "--path",
+        "included",
+    ]);
+    assert!(sparse.join("included").exists());
+    assert!(!sparse.join("omitted").exists());
+    let file = fixture.ok(&[
+        "file", &revision, "omitted", "--offset", "1", "--limit", "3",
+    ]);
+    assert_eq!(file["bytes"], json!([101, 116, 97]));
+    assert_eq!(file["next_offset"], 4);
+    let base = fixture.ok(&["merge-base", &revision, &revision]);
+    assert_eq!(base["merge_base"], revision);
+    let changes = fixture.ok(&["changes", &revision, &revision, "--path", "omitted"]);
+    assert_eq!(changes["entries"], json!([]));
+    let mut client = McpClient::new(&fixture);
+    client.send(
+        &json!({"jsonrpc":"2.0","id":901,"method":"tools/call","params":{
+        "_meta":modern_meta(),"name":"izu_file_read","arguments":{"schema_version":1,"operation":{
+            "kind":"file_read","context":{"repository":fixture.root,"workspace":null},
+            "revision":revision,"path":"omitted","offset":0,"limit":64}}}}),
+    );
+    let reply = client.receive();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(
+        reply.pointer("/result/structuredContent/outcome/result/data/bytes"),
+        Some(&json!(b"retained".to_vec()))
+    );
+    drop(client);
+    let (output, expanded) = fixture.json(&json!({"schema_version":1,"operation":{
+        "kind":"workspace_expand","context":{"repository":fixture.root,"workspace":workspace["id"],"expected":workspace["expected"]},
+        "selection":{"kind":"all"}}}));
+    assert!(output.status.success(), "{expanded}");
+    assert_eq!(fs::read(sparse.join("omitted")).unwrap(), b"retained");
+    fixture.ok(&["verify"]);
 }

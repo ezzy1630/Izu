@@ -572,16 +572,24 @@ fn lock_wait_is_bounded_and_recovers_on_drop() -> TestResult {
         lock_timeout: Duration::from_millis(30),
         ..StoreOptions::default()
     })?;
+    // Only the contender has a 30 ms budget. Uncontended filesystem work can
+    // legitimately consume that budget; setup/recovery are not latency checks.
+    let owner = Store::open(&fixture.path, &StoreOptions::default())?;
     let cancel = CancellationToken::new();
-    let first = fixture.store.begin(HeadExpectation::Any, &cancel)?;
+    let first = owner
+        .begin(HeadExpectation::Any, &cancel)
+        .map_err(|error| format!("acquire initial holder: {error}"))?;
     let start = Instant::now();
     assert!(matches!(
         fixture.store.begin(HeadExpectation::Any, &cancel),
         Err(StoreError::LockTimeout("head.lock"))
     ));
+    assert!(start.elapsed() >= Duration::from_millis(30));
     assert!(start.elapsed() < Duration::from_secs(1));
     drop(first);
-    fixture.store.begin(HeadExpectation::Any, &cancel)?;
+    owner
+        .begin(HeadExpectation::Any, &cancel)
+        .map_err(|error| format!("acquire after holder drop: {error}"))?;
     Ok(())
 }
 
@@ -591,9 +599,12 @@ fn head_absence_is_confirmed_without_relocking_guarded_readers() -> TestResult {
         lock_timeout: Duration::from_millis(30),
         ..StoreOptions::default()
     })?;
+    let owner = Store::open(&fixture.path, &StoreOptions::default())?;
     let cancel = CancellationToken::new();
-    assert_eq!(fixture.store.current_head(&cancel)?, None);
-    let publication = fixture.store.begin(HeadExpectation::Absent, &cancel)?;
+    assert_eq!(owner.current_head(&cancel)?, None);
+    let publication = owner
+        .begin(HeadExpectation::Absent, &cancel)
+        .map_err(|error| format!("acquire absent-HEAD publisher: {error}"))?;
     assert_eq!(publication.current_head(), None);
     let observed = fixture.store.current_head(&cancel);
     assert!(
@@ -607,7 +618,7 @@ fn head_absence_is_confirmed_without_relocking_guarded_readers() -> TestResult {
     ));
     drop(publication);
     assert_eq!(fixture.store.recover(&cancel)?.verified.head, None);
-    assert_eq!(fixture.store.current_head(&cancel)?, None);
+    assert_eq!(owner.current_head(&cancel)?, None);
     // Isolate the original inverse-lock-order invariant: recovery's exclusive
     // temporary lease excludes HEAD replacement, so it must not take head.lock.
     let head = fixture

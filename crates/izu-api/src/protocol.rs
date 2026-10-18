@@ -265,6 +265,26 @@ pub enum Operation {
         context: ReadContext,
         revision: String,
     },
+    FileRead {
+        context: ReadContext,
+        revision: String,
+        path: String,
+        offset: u64,
+        limit: usize,
+    },
+    Changes {
+        context: ReadContext,
+        before: String,
+        after: String,
+        selection: PathSelection,
+        after_path: Option<String>,
+        limit: usize,
+    },
+    MergeBase {
+        context: ReadContext,
+        ours: String,
+        theirs: String,
+    },
     Checkpoint {
         context: MutationContext,
         selection: PathSelection,
@@ -289,6 +309,17 @@ pub enum Operation {
         name: String,
         path: PathBuf,
         from: String,
+    },
+    WorkspaceSparseStart {
+        context: ReadContext,
+        name: String,
+        path: PathBuf,
+        from: String,
+        paths: Vec<String>,
+    },
+    WorkspaceExpand {
+        context: MutationContext,
+        selection: PathSelection,
     },
     WorkspaceList {
         context: ReadContext,
@@ -494,6 +525,14 @@ pub enum Operation {
         destination: PathBuf,
         workspace: Option<String>,
     },
+    GitPreflight {
+        source: GitLocation,
+        refs: Vec<GitImportRef>,
+        #[serde(default)]
+        tags: Vec<GitImportTag>,
+        #[serde(default)]
+        transport: GitTransport,
+    },
     GitClone {
         destination: PathBuf,
         source: GitLocation,
@@ -560,10 +599,16 @@ impl Operation {
             Self::Diff { .. } => "diff",
             Self::Log { .. } => "log",
             Self::Show { .. } => "show",
+            Self::FileRead { .. } => "file_read",
+            Self::Changes { .. } => "changes",
+            Self::MergeBase { .. } => "merge_base",
+            Self::GitPreflight { .. } => "git_preflight",
             Self::Checkpoint { .. } => "checkpoint",
             Self::Commit { .. } => "commit",
             Self::Revise { .. } => "revise",
             Self::WorkspaceStart { .. } => "workspace_start",
+            Self::WorkspaceSparseStart { .. } => "workspace_sparse_start",
+            Self::WorkspaceExpand { .. } => "workspace_expand",
             Self::WorkspaceList { .. } => "workspace_list",
             Self::WorkspaceClose { .. } => "workspace_close",
             Self::RefList { .. } => "ref_list",

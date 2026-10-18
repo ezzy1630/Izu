@@ -104,6 +104,11 @@ the same operations for agents. A host must invoke the managed launch contract
 before starting a thread: installing an MCP server does not automatically change
 another application's working directory.
 
+For an agent launch, checked Cargo landing and a verified backup of unfinished
+work, follow the [daily-use guide](docs/daily-use.md). Local packages include
+`izu-agent`, `izu-agent-verify`, `izu-backup` and `izu-cargo-check`; these helpers
+require Python 3.11 or newer and call the shared native engine.
+
 ## Recovery and interchange
 
 The local store retains immutable objects and an operation history. Native

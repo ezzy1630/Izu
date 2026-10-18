@@ -211,3 +211,17 @@ Binary minimum-version metadata does not establish support for an older OS or
 libc than the native host that actually ran the checks. The helper's `observe`
 mode can inspect existing qualified packages, but labels effective historical
 tool selection as unproven; it cannot retroactively create build provenance.
+
+## Packaged daily-use helpers
+
+The package's `bin` directory also contains `izu-agent`, `izu-agent-verify`,
+`izu-backup` and `izu-cargo-check`. They require Python 3.11 or newer. The agent
+and backup launchers prefer the `izu` binary beside them, avoiding accidental use
+of another installation. Each script's digest is in `BUILD-MANIFEST.json` and
+`SHA256SUMS`. Extracted-package acceptance checks all four entrypoints, host
+cancellation/portability, all-workspace backup recovery and Cargo output placement.
+No helper installation is performed by packaging or verification.
+
+See [daily use](daily-use.md) for the workflow and [agent host](agent-host.md) for
+instruction, authentication and cancellation behavior. Package checks use fixture
+hosts; authenticated model execution is a separate acceptance gate.

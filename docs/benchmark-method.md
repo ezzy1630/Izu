@@ -71,3 +71,24 @@ After executable SHA-256:
 Local raw samples, source snapshots, build records and the comparison are kept
 under `.artifacts/capture-profile/`. These generated artifacts are excluded
 from version control; retain them separately when reviewing the measurement.
+
+## Real-agent comparison and decomposition
+
+`scripts/agent-workflow-benchmark.py` copies the project's actual `izu-merge`
+source and existing tests into owned fixtures and asks two real Codex runs per
+backend to add independent substantive regression tests. Git uses shared
+worktrees; both backends test the exact integration candidate and advance main
+with an expected-old lease. Original source hashes, expected test names, actual
+model completion, complete test execution and integrated output hashes are checked.
+Each backend gets identical source, prompts, concurrency and command checks.
+The report records raw phase times and identifies model/cache variability. This
+is a small real-crate task, not proof of general productivity or a winning backend.
+The harness retains fixtures for inspection; cleanup is outside its timings.
+
+The `repository-profile` example separately measures tree decoding, stored-tree
+diff, ancestry, working status and real HEAD transaction admission with 1/4/16
+contending callers. Its admission rows exclude history publication and must not
+be described as commit throughput. Run it against a new owned directory and
+record the binary/source identity; do not infer internal timings by subtracting
+unrelated CLI measurements. Add indexes or change transaction ownership only
+when these measurements identify a material bottleneck.

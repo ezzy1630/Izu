@@ -47,7 +47,7 @@ fn tags_require_explicit_supported_version_and_retain_all_edges() -> Result<(), 
     assert!(
         decode_metadata::<RepositoryView>(
             &String::from_utf8_lossy(&bytes)
-                .replace("v2", "v3")
+                .replace("v2", "v999")
                 .into_bytes(),
             &limits
         )
@@ -68,5 +68,31 @@ fn tags_require_explicit_supported_version_and_retain_all_edges() -> Result<(), 
             }
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn version_three_is_explicit_and_empty_scope_is_invalid() -> Result<(), ModelError> {
+    let limits = Limits::default();
+    let bytes=br#"{"candidates":[],"changes":{},"evidence":{},"metadata_version":"v3","refs":{},"workspaces":{}}"#;
+    let view: RepositoryView = decode_metadata(bytes, &limits)?;
+    assert_eq!(view.metadata_version, Some(MetadataVersion::V3));
+    assert_eq!(encode_metadata(&view, &limits)?, bytes);
+    let mut record = WorkspaceRecord {
+        name: "fixture".into(),
+        root: "/fixture".into(),
+        head: RevisionId::from_object(ObjectId::from_bytes([1; 32])),
+        sources: BTreeMap::new(),
+        sparse_paths: Some(vec![]),
+    };
+    assert!(record.validate(&limits).is_err());
+    record.sparse_paths = Some(vec![RepoPath::new("src")?]);
+    record.validate(&limits)?;
+    let mut view = RepositoryView::default();
+    view.workspaces
+        .insert(WorkspaceId::from_bytes([1; 16]), record);
+    assert!(view.validate(&limits).is_err());
+    view.metadata_version = Some(MetadataVersion::V3);
+    view.validate(&limits)?;
     Ok(())
 }

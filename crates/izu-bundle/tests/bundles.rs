@@ -79,6 +79,81 @@ fn create_fixture_bundle(fixture: &Fixture) -> PathBuf {
     output
 }
 
+#[test]
+fn sparse_bundle_cold_restore_preserves_scope_and_omitted_history() {
+    let fixture = fixture();
+    let c = CancellationToken::new();
+    let repo = &fixture.repository;
+    fs::write(fixture.original.join("omitted"), b"retained history").expect("omitted file");
+    let base = repo
+        .commit(
+            fixture.workspace,
+            repo.workspace(fixture.workspace, &c).unwrap().expected,
+            Selection::All,
+            "base".into(),
+            author(),
+            &c,
+        )
+        .unwrap();
+    repo.migrate_metadata(
+        repo.current_operation(&c).unwrap(),
+        izu_model::MetadataVersion::V3,
+        &c,
+    )
+    .unwrap();
+    let sparse = repo
+        .fork_sparse_workspace(
+            "sparse".into(),
+            fixture.temp.path().join("sparse"),
+            base.revision,
+            vec![RepoPath::new("hello.txt").unwrap()],
+            &c,
+        )
+        .unwrap();
+    let archive = fixture.temp.path().join("sparse.izubundle");
+    create(
+        repo,
+        repo.current_operation(&c).unwrap(),
+        &archive,
+        &BundleOptions::default(),
+        &c,
+    )
+    .unwrap();
+    let destination = fixture.temp.path().join("sparse-restored");
+    restore(
+        &archive,
+        &destination,
+        &RestoreOptions {
+            workspace: Some(sparse.id),
+            ..RestoreOptions::default()
+        },
+        &c,
+    )
+    .unwrap();
+    let restored = Repository::open(&destination, RepositoryOptions::default()).unwrap();
+    assert!(!destination.join("omitted").exists());
+    assert!(restored.status(sparse.id, &c).unwrap().entries.is_empty());
+    assert_eq!(
+        restored
+            .file_page(base.revision, RepoPath::new("omitted").unwrap(), 0, 64, &c)
+            .unwrap()
+            .bytes,
+        b"retained history"
+    );
+    restored
+        .expand_workspace(
+            sparse.id,
+            restored.workspace(sparse.id, &c).unwrap().expected,
+            Selection::All,
+            &c,
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(destination.join("omitted")).unwrap(),
+        b"retained history"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn known_volatile_destination_is_rejected_before_creating_output_or_stage() {

@@ -98,8 +98,15 @@ runtime workers. It sets `process_group(0)` using safe `CommandExt`, stores a
 private `Child` and has no constructor from arbitrary PIDs or external children.
 `id()` is read-only bookkeeping; `take_stdin/stdout/stderr` transfers pipe
 ownership. `observe_exit()` uses `waitid(WNOWAIT | WNOHANG | WEXITED)` and never
-reaps the leader. `stop(Duration)` checks ownership, sends group SIGKILL before
-reaping, then bounds leader-reap polling. After reaping it performs only a harmless group
+reaps the leader. `stop(Duration)` checks ownership and sends group SIGKILL.
+It observes leader exit without reaping, then sweeps the group again while that
+unreaped child still reserves the identity. Darwin [snapshots group membership
+before signalling](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_proc.c);
+a concurrent fork can create a child after the first snapshot. Reaping
+immediately would surrender the authority needed to catch that late child.
+Both phases share the existing cleanup deadline. The report retains the initial
+signal diagnostic, and the final sweep alone never establishes success.
+After reaping it performs only a harmless group
 existence probe (signal zero), never another real signal. `ESRCH` establishes
 `GroupQuiescence::AbsentObserved`; group presence, permission error or any other
 uncertainty remains unknown when the shared cleanup deadline expires. A reused

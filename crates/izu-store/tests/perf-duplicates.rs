@@ -143,3 +143,22 @@ fn simultaneous_duplicate_batches_preserve_one_verified_object() -> TestResult {
     assert_eq!(fs::read_dir(root.join("tmp"))?.count(), 0);
     Ok(())
 }
+
+#[test]
+fn reused_blob_replacement_before_finish_is_not_acknowledged() -> TestResult {
+    let d = tempfile::tempdir()?;
+    let root = d.path().join("store");
+    let c = CancellationToken::new();
+    let store = Store::init(&root, &StoreOptions::default())?;
+    let id = store.put(ObjectKind::Blob, b"reuse identity", &c)?;
+    let name = id.to_string();
+    let path = root.join("objects").join(&name[..2]).join(&name[2..]);
+    let mut batch = store.begin_object_batch(&c)?;
+    batch.stage_blob_reusing(&mut std::io::Cursor::new(b"reuse identity"), 14, id, &c)?;
+    let kept = d.path().join("original");
+    fs::rename(&path, &kept)?;
+    fs::copy(&kept, &path)?;
+    assert!(batch.finish(&c).is_err());
+    assert_eq!(store.get(id, ObjectKind::Blob, &c)?, b"reuse identity");
+    Ok(())
+}

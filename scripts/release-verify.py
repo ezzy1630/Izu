@@ -104,6 +104,11 @@ def main():
     for name in ['izu', 'izu-lab']:
         if sha(extracted / 'bin' / name) != manifest['binary_sha256'][name]:
             raise ValueError('binary identity mismatch')
+    for name, expected in manifest.get('script_sha256', {}).items():
+        if name not in {'izu-agent', 'izu-agent-verify', 'izu-backup', 'izu-cargo-check'}:
+            raise ValueError('unknown packaged entrypoint')
+        if sha(extracted / 'bin' / name) != expected:
+            raise ValueError('packaged entrypoint digest mismatch: ' + name)
     result = {'schema_version': 1, 'archive_sha256': args.expected_sha256,
               'source_manifest_sha256': source['source_manifest_sha256'], 'binary_sha256': manifest['binary_sha256'],
               'checksum_manifest_sha256': checksum_digest, 'data_verified': True, 'acceptance_passed': False,
@@ -129,6 +134,22 @@ def main():
                 and gate['provenance']['source_manifest_sha256'] == source['source_manifest_sha256']
                 and gate['provenance']['executable_sha256'] == manifest['binary_sha256']['izu'])
             result['excluded_scope_cases'] = gate['excluded_scope_cases']
+        if manifest.get('script_sha256'):
+            environment.update(PYTHONDONTWRITEBYTECODE='1',
+                IZU_TEST_BINARY=str(extracted / 'bin/izu'),
+                IZU_BACKUP_SCRIPT=str(extracted / 'bin/izu-backup'))
+            helper_commands = [[sys.executable, '-B', str(extracted / 'bin' / name), '--help']
+                               for name in manifest['script_sha256']]
+            helper_commands += [[sys.executable, '-B', str(extracted / 'source/scripts/tests' / name)]
+                                for name in ('test_agent_host.py', 'test_backup.py', 'test_cargo_check.py')]
+            helper_results = []
+            for number, helper_command in enumerate(helper_commands):
+                with (work / f'helper-{number}.log').open('xb') as log:
+                    helper_run = subprocess.run(helper_command, cwd=extracted, env=environment,
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=180)
+                helper_results.append({'argv': helper_command, 'exit_code': helper_run.returncode})
+            result['helper_checks'] = helper_results
+            result['acceptance_passed'] &= all(item['exit_code'] == 0 for item in helper_results)
         result['archive_unchanged'] = sha(archive) == args.expected_sha256
         result['binaries_unchanged'] = all(sha(extracted / 'bin' / name) == digest
                                           for name, digest in manifest['binary_sha256'].items())

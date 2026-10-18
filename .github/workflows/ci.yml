@@ -57,6 +57,12 @@ jobs:
         run: cargo clippy -p izu-store -p izu-engine -p izu-bundle -p izu-runtime --all-targets --features izu-store/fault-injection,izu-engine/fault-injection,izu-bundle/fault-injection,izu-runtime/fault-injection --locked -- -D warnings
       - name: Build release executables
         run: cargo build -p izu-cli -p izu-lab --release --locked
+      - name: Exercise backup recovery and private build output helpers
+        shell: bash
+        run: |
+          export IZU_TEST_BINARY="$GITHUB_WORKSPACE/.artifacts/local/target/release/izu"
+          python3 -B scripts/tests/test_backup.py
+          python3 -B scripts/tests/test_cargo_check.py
       - name: Exercise the exact release executable
         shell: bash
         run: |
@@ -71,10 +77,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
+          include-hidden-files: true
           name: validation-${{ matrix.os }}-attempt-${{ github.run_attempt }}
           path: |
             .artifacts/local/ci
             .artifacts/local/mcp-deadline-captures
+            .artifacts/local/tmp
 
   packages:
     strategy:
@@ -120,6 +128,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
+          include-hidden-files: true
           name: packages-${{ matrix.os }}-attempt-${{ github.run_attempt }}
           path: |
             .artifacts/local/ci

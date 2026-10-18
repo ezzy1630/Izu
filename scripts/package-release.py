@@ -154,6 +154,13 @@ def main():
         shutil.copyfile(found[0], destination)
         destination.chmod(0o755)
         binaries[name] = sha(destination)
+    entrypoints = {}
+    for name, script in {'izu-agent': 'agent-host.py', 'izu-agent-verify': 'agent-host-verify.py',
+                         'izu-backup': 'backup.py', 'izu-cargo-check': 'cargo-check.py'}.items():
+        destination = package / 'bin' / name
+        shutil.copyfile(frozen / 'scripts' / script, destination)
+        destination.chmod(0o755)
+        entrypoints[name] = sha(destination)
     for name in ['NOTICE', 'LICENSE-APACHE']:
         shutil.copyfile(frozen / name, package / name)
     if source_manifest(frozen) != original or source_manifest(root) != original:
@@ -164,7 +171,7 @@ def main():
         'schema_version': 1, 'version': version, 'source_manifest_sha256': original['source_manifest_sha256'],
         'cargo_lock_sha256': sha(frozen / 'Cargo.lock'), 'rustc_verbose': compiler, 'cargo_version': cargo,
         'build_command': build_args, 'rustflags': '--remap-path-prefix=<frozen-source>=/izu/source; <tool-cache>=/izu/tools-or-cargo',
-        'profile': 'release default features', 'binary_sha256': binaries,
+        'profile': 'release default features', 'binary_sha256': binaries, 'script_sha256': entrypoints,
         'build_host': {'system': platform.system(), 'machine': platform.machine()},
         'scope': 'Unpublished unsigned build candidate; extraction acceptance is recorded separately. No support or ABI claim.'})
     # Build outputs never enter the source archive.
@@ -188,7 +195,7 @@ def main():
                     tar.addfile(entry, stream)
     write_json(output / 'package-result.json', {'schema_version': 1, 'archive': archive.name,
                'archive_sha256': sha(archive), 'source_manifest_sha256': original['source_manifest_sha256'],
-               'binary_sha256': binaries, 'dependencies': len(dependencies)})
+               'binary_sha256': binaries, 'script_sha256': entrypoints, 'dependencies': len(dependencies)})
     print(json.dumps({'archive': str(archive), 'sha256': sha(archive)}, sort_keys=True))
 
 

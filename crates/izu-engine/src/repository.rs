@@ -555,6 +555,7 @@ impl Repository {
         let tree_id = working_tree(&workspace)?;
         let tree = self.tree(tree_id, cancel)?;
         reject_conflicts(&tree)?;
+        let tree = Self::workspace_tree(&tree, &workspace.sparse_paths);
         publish(self.store.bootstrap_archive(archived_root, cancel)?)?;
         self.prepare_workspace_locks(selected)?;
         source::materialize_at(
@@ -654,6 +655,7 @@ impl Repository {
         };
         let revision = repository.put_revision(&initial, &cancel)?;
         let workspace = WorkspaceRecord {
+            sparse_paths: None,
             name: "default".into(),
             root: path_text(&repository.root)?,
             head: revision,
@@ -1390,6 +1392,45 @@ impl Repository {
         Ok((source, tree, stats))
     }
 
+    fn workspace_selection(state: &WorkspaceState, selection: &Selection) -> Result<Selection> {
+        let Some(paths) = &state.record.sparse_paths else {
+            return Ok(selection.clone());
+        };
+        let scope = Selection::Paths(paths.clone());
+        match selection {
+            Selection::All => Ok(scope),
+            Selection::Paths(selected) => {
+                if selected.iter().any(|path| !scope.includes(path)) {
+                    return Err(EngineError::InvalidInput(
+                        "path is outside sparse scope; expand the workspace first".into(),
+                    ));
+                }
+                Ok(selection.clone())
+            }
+        }
+    }
+
+    fn workspace_tree(tree: &Tree, paths: &Option<Vec<RepoPath>>) -> Tree {
+        match paths {
+            None => tree.clone(),
+            Some(paths) => {
+                let scope = Selection::Paths(paths.clone());
+                Tree {
+                    entries: tree
+                        .entries
+                        .iter()
+                        .filter(|(path, entry)| {
+                            scope.includes(path)
+                                || (matches!(entry, TreeEntry::Directory { .. })
+                                    && scope.may_descend(path))
+                        })
+                        .map(|(path, entry)| (path.clone(), entry.clone()))
+                        .collect(),
+                }
+            }
+        }
+    }
+
     fn capture_state_at(
         &self,
         state: &WorkspaceState,
@@ -1398,6 +1439,7 @@ impl Repository {
         include_ignored: bool,
         cancel: &CancellationToken,
     ) -> Result<(Tree, CaptureStats)> {
+        let selection = Self::workspace_selection(state, selection)?;
         let base = self.tree(state.expected.working_tree, cancel)?;
         reject_conflicts(&base)?;
         let tracked = self.tracked(state, cancel)?;
@@ -1407,7 +1449,7 @@ impl Repository {
             Path::new(&state.record.root),
             &base,
             &tracked,
-            selection,
+            &selection,
             &self.options.source_limits,
             cancel,
             include_ignored,
@@ -1776,6 +1818,123 @@ impl Repository {
             &self.tree(self.revision(before, cancel)?.tree, cancel)?,
             &self.tree(self.revision(after, cancel)?.tree, cancel)?,
         )
+    }
+
+    /// Read captured history only: no workspace lookup, source scan or history write.
+    pub fn file_page(
+        &self,
+        revision: RevisionId,
+        path: RepoPath,
+        offset: u64,
+        limit: usize,
+        cancel: &CancellationToken,
+    ) -> Result<FilePage> {
+        let _retention = self.retention_lease(cancel)?;
+        if limit == 0 || limit > 65_536 {
+            return Err(EngineError::InvalidInput(
+                "file page limit must be 1..65536".into(),
+            ));
+        }
+        let tree = self.tree(self.revision(revision, cancel)?.tree, cancel)?;
+        let Some(TreeEntry::File { blob, mode }) = tree.entries.get(&path) else {
+            return Err(EngineError::InvalidInput(
+                "path is not a regular file at this revision".into(),
+            ));
+        };
+        struct Slice {
+            position: u64,
+            offset: u64,
+            limit: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Slice {
+            fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+                let skip = self
+                    .offset
+                    .saturating_sub(self.position)
+                    .min(input.len() as u64) as usize;
+                let count = (input.len() - skip).min(self.limit - self.bytes.len());
+                self.bytes.extend_from_slice(&input[skip..skip + count]);
+                self.position = self
+                    .position
+                    .checked_add(input.len() as u64)
+                    .ok_or_else(|| std::io::Error::other("file offset overflow"))?;
+                Ok(input.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(limit)
+            .map_err(|_| EngineError::Allocation {
+                resource: "file page",
+            })?;
+        let mut slice = Slice {
+            position: 0,
+            offset,
+            limit,
+            bytes,
+        };
+        let total_bytes = self.read_blob(*blob, &mut slice, cancel)?;
+        if offset > total_bytes {
+            return Err(EngineError::InvalidInput(
+                "file offset exceeds length".into(),
+            ));
+        }
+        let end = offset + slice.bytes.len() as u64;
+        Ok(FilePage {
+            revision,
+            path,
+            blob: *blob,
+            mode: *mode,
+            offset,
+            total_bytes,
+            bytes: slice.bytes,
+            next_offset: (end < total_bytes).then_some(end),
+        })
+    }
+
+    /// Lexicographic cursor over changed paths in two immutable revisions.
+    pub fn changes_page(
+        &self,
+        before: RevisionId,
+        after: RevisionId,
+        selection: Selection,
+        after_path: Option<RepoPath>,
+        limit: usize,
+        cancel: &CancellationToken,
+    ) -> Result<ChangePage> {
+        source::validate_selection(&selection)?;
+        if limit == 0 || limit > 1000 {
+            return Err(EngineError::InvalidInput(
+                "change page limit must be 1..1000".into(),
+            ));
+        }
+        let mut entries: Vec<_> = self
+            .diff(before, after, cancel)?
+            .into_iter()
+            .filter(|change| {
+                selection.includes(&change.path)
+                    && after_path
+                        .as_ref()
+                        .is_none_or(|cursor| change.path > *cursor)
+            })
+            .take(limit + 1)
+            .collect();
+        let next_after = if entries.len() > limit {
+            entries.pop();
+            entries.last().map(|entry| entry.path.clone())
+        } else {
+            None
+        };
+        Ok(ChangePage {
+            before,
+            after,
+            entries,
+            next_after,
+        })
     }
 
     pub fn working_diff(
@@ -2152,7 +2311,7 @@ impl Repository {
                 for update in refs {
                     check_ref(view, &update.name, update.expected)?;
                 }
-                if !tags.is_empty() && view.metadata_version != Some(MetadataVersion::V2) {
+                if !tags.is_empty() && view.metadata_version.is_none() {
                     return Err(EngineError::MetadataMigrationRequired {
                         current: 1,
                         required: 2,
@@ -2216,17 +2375,31 @@ impl Repository {
         expected: OperationId,
         cancel: &CancellationToken,
     ) -> Result<OperationId> {
+        self.migrate_metadata(expected, MetadataVersion::V2, cancel)
+    }
+
+    pub fn migrate_metadata(
+        &self,
+        expected: OperationId,
+        version: MetadataVersion,
+        cancel: &CancellationToken,
+    ) -> Result<OperationId> {
         let _retention = self.retention_lease(cancel)?;
         let transaction = self.store.begin(HeadExpectation::At(expected), cancel)?;
         let mut view = self.operation(expected, cancel)?.view;
-        if view.metadata_version == Some(MetadataVersion::V2) {
+        if view.metadata_version == Some(version) {
             return Ok(expected);
         }
-        view.metadata_version = Some(MetadataVersion::V2);
+        if view.metadata_version == Some(MetadataVersion::V3) {
+            return Err(EngineError::InvalidInput(
+                "metadata downgrade is unsupported".into(),
+            ));
+        }
+        view.metadata_version = Some(version);
         let operation = Operation {
             parent: Some(expected),
             view,
-            description: "Migrate native metadata to version two".into(),
+            description: format!("Migrate native metadata to {version:?}"),
             created_at_unix_ms: timestamp()?,
         };
         let id = self.write_operation(&operation, cancel)?;
@@ -2238,6 +2411,41 @@ impl Repository {
         name: String,
         path: impl AsRef<Path>,
         from: RevisionId,
+        cancel: &CancellationToken,
+    ) -> Result<WorkspaceState> {
+        self.fork_workspace_scoped(name, path, from, None, cancel)
+    }
+
+    pub fn fork_sparse_workspace(
+        &self,
+        name: String,
+        path: impl AsRef<Path>,
+        from: RevisionId,
+        mut paths: Vec<RepoPath>,
+        cancel: &CancellationToken,
+    ) -> Result<WorkspaceState> {
+        paths.sort();
+        paths.dedup();
+        source::validate_selection(&Selection::Paths(paths.clone()))?;
+        if self.view(cancel)?.metadata_version != Some(MetadataVersion::V3) {
+            return Err(EngineError::MetadataMigrationRequired {
+                current: if self.view(cancel)?.metadata_version.is_some() {
+                    2
+                } else {
+                    1
+                },
+                required: 3,
+            });
+        }
+        self.fork_workspace_scoped(name, path, from, Some(paths), cancel)
+    }
+
+    fn fork_workspace_scoped(
+        &self,
+        name: String,
+        path: impl AsRef<Path>,
+        from: RevisionId,
+        sparse_paths: Option<Vec<RepoPath>>,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceState> {
         let _retention = self.retention_lease(cancel)?;
@@ -2271,7 +2479,7 @@ impl Repository {
             }
             Err(error) => return Err(io(requested, error)),
         };
-        self.fork_workspace_at(name, root, &directory, from, cancel)
+        self.fork_workspace_at(name, root, &directory, from, sparse_paths, cancel)
             .map(|receipt| receipt.workspace)
     }
 
@@ -2281,6 +2489,7 @@ impl Repository {
         root: PathBuf,
         directory: &Directory,
         from: RevisionId,
+        sparse_paths: Option<Vec<RepoPath>>,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceForkReceipt> {
         directory
@@ -2292,6 +2501,7 @@ impl Repository {
         let revision = self.revision(from, cancel)?;
         let tree = self.tree(revision.tree, cancel)?;
         reject_conflicts(&tree)?;
+        let tree = Self::workspace_tree(&tree, &sparse_paths);
         if directory
             .entries()
             .map_err(|error| io(&root, error))?
@@ -2326,6 +2536,7 @@ impl Repository {
         self.verify_source_at(directory, &root, &tree, cancel)?;
         root_identity(directory, &root)?;
         let record = WorkspaceRecord {
+            sparse_paths,
             name: name.clone(),
             root: root_text,
             head: from,
@@ -2366,6 +2577,146 @@ impl Repository {
                 },
             },
             operation,
+        })
+    }
+
+    /// Expands scope only. Added files never overwrite different existing bytes.
+    /// A failed expansion retains both the old scope and recoverable source.
+    pub fn expand_workspace(
+        &self,
+        id: WorkspaceId,
+        expected: WorkspaceExpectation,
+        selection: Selection,
+        cancel: &CancellationToken,
+    ) -> Result<WorkspaceScopeReceipt> {
+        source::validate_selection(&selection)?;
+        let _retention = self.retention_lease(cancel)?;
+        let guard = self.lock_workspace(id, expected, cancel)?;
+        let state = guard.state();
+        let Some(old_paths) = &state.record.sparse_paths else {
+            return Err(EngineError::InvalidInput(
+                "workspace already has full scope".into(),
+            ));
+        };
+        let paths = match selection {
+            Selection::All => None,
+            Selection::Paths(mut paths) => {
+                paths.extend(old_paths.iter().cloned());
+                paths.sort();
+                paths.dedup();
+                Some(paths)
+            }
+        };
+        if paths == state.record.sparse_paths {
+            return Err(EngineError::InvalidInput("scope is unchanged".into()));
+        }
+        let directory = guard.directory();
+        let root = Path::new(&state.record.root);
+        let source = SourceGuard::pinned(self, state, directory)?;
+        let (logical, _) =
+            self.capture_state_at(state, directory, &Selection::All, false, cancel)?;
+        let (physical, _) = source::capture_at(
+            &self.store,
+            directory,
+            root,
+            &Tree::default(),
+            &BTreeSet::new(),
+            &Selection::All,
+            &self.options.source_limits,
+            cancel,
+            true,
+        )?;
+        let desired = Self::workspace_tree(&logical, &paths);
+        let mut after = physical.clone();
+        for (path, entry) in &desired.entries {
+            if after.entries.get(path).is_some_and(|old| old != entry) {
+                return Err(EngineError::UnselectedCollision(path.as_str().into()));
+            }
+            after.entries.insert(path.clone(), entry.clone());
+        }
+        let recovery_tree = self.put_tree(&physical, cancel)?;
+        let logical_id = self.put_tree(&logical, cancel)?;
+        let recovery = self.mutate_source(
+            &source,
+            recovery_tree,
+            "Save source before sparse expansion".into(),
+            cancel,
+            |view| {
+                check_workspace(view, id, expected)?;
+                let record = view
+                    .workspaces
+                    .get_mut(&id)
+                    .ok_or(EngineError::UnknownWorkspace(id))?;
+                if record.sparse_paths != state.record.sparse_paths {
+                    return Err(EngineError::StaleWorkspace { workspace: id });
+                }
+                record.sources.insert(
+                    RECOVERY.into(),
+                    SourceRecord {
+                        path: None,
+                        tree: recovery_tree,
+                        revision: None,
+                    },
+                );
+                Ok(())
+            },
+        )?;
+        source::materialize_at(
+            &self.store,
+            directory,
+            root,
+            &physical,
+            &after,
+            &recovery.to_string(),
+            &self.options.source_limits,
+            cancel,
+        )
+        .map_err(|error| EngineError::RestorationFailed {
+            recovery,
+            reason: error.to_string(),
+        })?;
+        self.verify_source_at(directory, root, &after, cancel)
+            .map_err(|error| EngineError::RestorationUncertain {
+                recovery,
+                operation: None,
+                reason: error.to_string(),
+            })?;
+        let mut record = state.record.clone();
+        record.sparse_paths = paths;
+        set_working(&mut record, logical_id, None);
+        record.sources.insert(
+            RECOVERY.into(),
+            SourceRecord {
+                path: None,
+                tree: recovery_tree,
+                revision: None,
+            },
+        );
+        let operation = self
+            .mutate_source(
+                &source,
+                logical_id,
+                "Expand sparse workspace".into(),
+                cancel,
+                |view| {
+                    check_workspace(view, id, expected)?;
+                    view.workspaces.insert(id, record.clone());
+                    Ok(())
+                },
+            )
+            .map_err(|error| EngineError::RestorationUncertain {
+                recovery,
+                operation: error.uncertain_operation(),
+                reason: error.to_string(),
+            })?;
+        Ok(WorkspaceScopeReceipt {
+            operation,
+            recovery_operation: recovery,
+            workspace: WorkspaceState {
+                id,
+                expected: expectation(&record)?,
+                record,
+            },
         })
     }
 
@@ -2419,6 +2770,7 @@ impl Repository {
             self.metadata.join("workspaces").join(leaf),
             &directory,
             from,
+            None,
             cancel,
         )
     }
@@ -2780,6 +3132,8 @@ impl Repository {
     ) -> Result<RestoreReceipt> {
         source::validate_selection(&selection)?;
         let state = guard.state();
+        // Explicit out-of-scope edits require expansion; All updates the full logical revision.
+        Self::workspace_selection(state, &selection)?;
         let id = state.id;
         let expected = state.expected;
         let root = Path::new(&state.record.root);
@@ -2805,7 +3159,6 @@ impl Repository {
                 }
             }
         }
-        let recovery_tree = self.put_tree(&before, cancel)?;
         let known = self.tracked(state, cancel)?;
         let mut after = before.clone();
         after
@@ -2836,6 +3189,48 @@ impl Repository {
         }
         source::complete_restore_ancestors(&mut eligible_after, target, &before, &selection)?;
         let after_id = self.put_tree(&eligible_after, cancel)?;
+        let (physical_before, physical_after) = if let Some(paths) = &state.record.sparse_paths {
+            // Scope describes tracked source, not permission to discard other files.
+            // Capture every physical path for recovery and retain out-of-scope entries.
+            let (physical, _) = source::capture_at(
+                &self.store,
+                directory,
+                root,
+                &Tree::default(),
+                &BTreeSet::new(),
+                &Selection::All,
+                &self.options.source_limits,
+                cancel,
+                true,
+            )?;
+            let scope = Selection::Paths(paths.clone());
+            let mut projected = Self::workspace_tree(&after, &state.record.sparse_paths);
+            for (path, entry) in &physical.entries {
+                if !scope.includes(path) {
+                    match projected.entries.get(path) {
+                        Some(TreeEntry::Directory { .. })
+                            if matches!(entry, TreeEntry::Directory { .. }) => {}
+                        Some(existing) if existing != entry => {
+                            return Err(EngineError::UnselectedCollision(path.as_str().into()));
+                        }
+                        _ => {
+                            projected.entries.insert(path.clone(), entry.clone());
+                        }
+                    }
+                }
+            }
+            let with_unselected = projected.clone();
+            source::complete_restore_ancestors(
+                &mut projected,
+                &with_unselected,
+                &physical,
+                &Selection::All,
+            )?;
+            (physical, projected)
+        } else {
+            (before.clone(), after.clone())
+        };
+        let recovery_tree = self.put_tree(&physical_before, cancel)?;
         let new_head = head;
         let head_tree = self.revision(new_head, cancel)?.tree;
         // The recovery operation serializes the expected workspace state before
@@ -2873,8 +3268,8 @@ impl Repository {
             &self.store,
             directory,
             root,
-            &before,
-            &after,
+            &physical_before,
+            &physical_after,
             &recovery.to_string(),
             &self.options.source_limits,
             cancel,
@@ -2885,7 +3280,7 @@ impl Repository {
                 reason: error.to_string(),
             });
         }
-        self.verify_source_at(directory, root, &after, cancel)
+        self.verify_source_at(directory, root, &physical_after, cancel)
             .map_err(|error| EngineError::RestorationUncertain {
                 recovery,
                 operation: None,

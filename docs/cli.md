@@ -234,3 +234,45 @@ operation and retained paths before retrying. Process groups and cooperative
 admission are not a security sandbox or hard CPU/memory/disk containment. MCP
 discovery does not automatically bind another host's threads; see
 [agent-api.md](agent-api.md) for supported explicit wrappers and protocols.
+
+## Inspect history without a checkout
+
+```sh
+izu file REVISION src/main.rs --offset 0 --limit 4096 --json
+izu changes BEFORE AFTER --path src --limit 100 --json
+izu merge-base OURS THEIRS --json
+izu git preflight /absolute/existing/git-repository --json
+```
+
+File pages preserve bytes as a JSON byte array, including binary content.
+Use the returned `next_offset` or `next_after` for another page. Revision IDs
+and path filters must remain the same across pages. Preflight reports supported
+content, warnings and explicit omissions before clone; a successful inventory
+does not authorize a later publication.
+
+## Sparse private workspaces
+
+Migrate deliberately: `izu format inspect --json` reports the current operation.
+`izu format migrate --to 3 --expect-operation OPERATION` appends an exact-leased
+upgrade. Older readers refuse v3; no downgrade is provided. Preserve a bundle
+and its compatible reader before upgrading important repositories.
+
+```sh
+izu workspace sparse-start api /absolute/new/api-workspace --from REVISION --path src/api
+izu --change api status
+izu --change api commit -m "API change"
+izu --change api workspace expand --path shared
+izu --change api workspace expand --all
+```
+
+Author identity remains explicit as for ordinary commits. Omitted paths remain
+in the complete logical tree and are not deletions. Ordinary source operations
+observe the selected scope; expand before editing outside it. Full clean updates
+advance the complete logical revision while materializing only its selected paths.
+Files created outside the selected scope remain on disk during updates; they
+are not included in commits until the workspace scope includes them.
+Required integration checks still use the complete candidate. Expansion preserves
+existing edits and refuses conflicting files in newly selected paths. It saves
+recovery state before filesystem changes; an interrupted expansion retains files
+and reports failure or uncertainty. Inspect them before retrying. No contraction
+or automatic workspace deletion is performed.
